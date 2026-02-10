@@ -362,11 +362,12 @@
                     }
 
                     const deepLink = 'https://t.me/' + BOT_NAME + '?start=' + param;
-                    statusMsg.textContent = '✅ გადამისამართება ბოტზე...';
-                    statusMsg.className = 'status-msg status-ok';
 
-                    tg.openTelegramLink(deepLink);
-                    setTimeout(() => { tg.close(); }, 500);
+                    // Mini App-ის დახურვა და deep link-ზე გადასვლა
+                    try { tg.close(); } catch(ex) {}
+                    setTimeout(() => {
+                        window.location.href = deepLink;
+                    }, 300);
                 } catch(e) {
                     statusMsg.textContent = '❌ გაგზავნა ვერ მოხერხდა: ' + e;
                     statusMsg.className = 'status-msg status-err';
