@@ -269,6 +269,8 @@
         function addCode(code) {
             code = code.trim();
             if (!code) return;
+            // ბარკოდებში ხშირად -00 სუფიქსი ემატება — მოვჭრათ
+            code = code.replace(/-00$/, '');
 
             const existing = scannedItems.find(item => item.code === code);
             if (existing) {
