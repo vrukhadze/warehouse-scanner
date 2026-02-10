@@ -362,8 +362,14 @@
                         statusMsg.textContent = '✅ გაიგზავნა! გადადიხარ ბოტში...';
                         statusMsg.className = 'status-msg status-ok';
                         // deep link — ბოტი მიიღებს /start SK_<key>
+                        const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
                         setTimeout(() => {
-                            window.location.href = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
+                            try {
+                                tg.openTelegramLink(deepLink);
+                            } catch(e) {
+                                // fallback — პირდაპირი redirect
+                                window.location.href = deepLink;
+                            }
                         }, 500);
                     } else {
                         statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
