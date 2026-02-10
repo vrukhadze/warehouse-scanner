@@ -163,32 +163,27 @@
         tg.ready();
         tg.expand();
 
-        const BOT_NAME = 'adtecwarehousebot';
-        // სერვერის მისამართი
-        const SCAN_SERVER = 'http://31.146.148.150:8443/scan';
-
-        // ოპერაციის კონტექსტის წაკითხვა
-        // startapp პარამეტრი: "SALE_123" ან "WRITEOFF_0"
+        // ოპერაციის კონტექსტის წაკითხვა URL query params-დან
+        // KeyboardButton web_app URL: ?op=SALE&bid=123
         let opType = '';
         let buyerId = '0';
 
-        // მეთოდი 1: Telegram startapp (tg.initDataUnsafe.start_param)
-        const startParam = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
-        if (startParam) {
-            const idx = startParam.indexOf('_');
-            if (idx > 0) {
-                opType = startParam.substring(0, idx);
-                buyerId = startParam.substring(idx + 1) || '0';
-            } else {
-                opType = startParam;
-            }
-        }
+        const urlParams = new URLSearchParams(window.location.search);
+        opType = urlParams.get('op') || '';
+        buyerId = urlParams.get('bid') || '0';
 
-        // მეთოდი 2: URL query params (fallback)
+        // fallback: Telegram startapp პარამეტრი
         if (!opType) {
-            const urlParams = new URLSearchParams(window.location.search);
-            opType = urlParams.get('op') || '';
-            buyerId = urlParams.get('bid') || '0';
+            const startParam = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+            if (startParam) {
+                const idx = startParam.indexOf('_');
+                if (idx > 0) {
+                    opType = startParam.substring(0, idx);
+                    buyerId = startParam.substring(idx + 1) || '0';
+                } else {
+                    opType = startParam;
+                }
+            }
         }
 
         // header-ში ოპერაციის ტიპის ჩვენება
@@ -338,48 +333,24 @@
         function sendData() {
             if (scannedItems.length === 0) return;
 
-            const statusMsg = document.getElementById('statusMsg');
-            const sendBtn = document.getElementById('sendBtn');
-            sendBtn.disabled = true;
-            statusMsg.textContent = '⏳ იგზავნება...';
-            statusMsg.className = 'status-msg';
-
-            // იუზერის ID Telegram WebApp-დან
-            const userId = (tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || 0;
-
             const payload = {
-                user_id: userId,
                 op: opType || '',
                 bid: buyerId || '0',
                 items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
             };
 
+            // კამერის გაჩერება და Telegram-ში გაგზავნა
             const doSend = () => {
-                fetch(SCAN_SERVER, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                })
-                .then(resp => resp.json())
-                .then(data => {
-                    if (data.ok) {
-                        statusMsg.textContent = '✅ გაიგზავნა! შეამოწმე ბოტის ჩატი.';
-                        statusMsg.className = 'status-msg status-ok';
-                        // 2 წამში Mini App დაიხურება
-                        setTimeout(() => {
-                            try { tg.close(); } catch(e) {}
-                        }, 2000);
-                    } else {
-                        statusMsg.textContent = '❌ შეცდომა: ' + (data.error || 'unknown');
-                        statusMsg.className = 'status-msg status-err';
-                        sendBtn.disabled = false;
-                    }
-                })
-                .catch(err => {
-                    statusMsg.textContent = '❌ სერვერთან კავშირი ვერ მოხერხდა: ' + err;
+                try {
+                    tg.sendData(JSON.stringify(payload));
+                    // sendData() ავტომატურად ხურავს Mini App-ს
+                    // მონაცემები პირდაპირ ბოტს მიდის web_app_data სახით
+                } catch(e) {
+                    const statusMsg = document.getElementById('statusMsg');
+                    statusMsg.textContent = '❌ შეცდომა: ' + e.message;
                     statusMsg.className = 'status-msg status-err';
-                    sendBtn.disabled = false;
-                });
+                    document.getElementById('sendBtn').disabled = false;
+                }
             };
 
             if (scannerRunning) {
