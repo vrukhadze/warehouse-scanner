@@ -33,6 +33,7 @@
             flex: 1;
             padding: 8px 16px;
             overflow-y: auto;
+            max-height: 40vh;
         }
         .scan-item {
             display: flex;
@@ -42,7 +43,9 @@
             border-radius: 10px;
             padding: 10px 14px;
             margin-bottom: 8px;
+            animation: fadeIn 0.3s;
         }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; } }
         .scan-item .code {
             font-size: 15px;
             font-weight: 500;
@@ -125,16 +128,31 @@
             font-size: 14px;
             color: var(--tg-theme-hint-color, #aaa);
         }
-        .beep { display: none; }
+        .status-msg {
+            text-align: center;
+            padding: 10px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .status-ok { color: #2ecc71; }
+        .status-err { color: #e74c3c; }
+        .last-scan {
+            text-align: center;
+            padding: 4px;
+            font-size: 12px;
+            color: #2ecc71;
+        }
     </style>
 </head>
 <body>
-    <div class="header">📷 ბარკოდის სკანერი</div>
+    <div class="header" id="headerText">📷 ბარკოდის სკანერი</div>
     <div id="reader"></div>
+    <div class="last-scan" id="lastScan"></div>
     <div class="scan-list" id="scanList">
-        <div class="empty-msg" id="emptyMsg">დასკანირე ბარკოდი კამერით...</div>
+        <div class="empty-msg">დასკანირე ბარკოდი კამერით...</div>
     </div>
     <div class="total-bar" id="totalBar"></div>
+    <div id="statusMsg"></div>
     <div class="bottom-bar">
         <button class="btn btn-clear" id="clearBtn" onclick="clearAll()">🗑 გასუფთავება</button>
         <button class="btn btn-send" id="sendBtn" onclick="sendData()" disabled>📤 გაგზავნა</button>
@@ -145,16 +163,49 @@
         tg.ready();
         tg.expand();
 
-        // დასკანირებული კოდების სია: { code: string, qty: number }
+        const BOT_NAME = 'adtecwarehousebot';
+
+        // ოპერაციის კონტექსტის წაკითხვა
+        // startapp პარამეტრი: "SALE_123" ან "WRITEOFF_0"
+        let opType = '';
+        let buyerId = '0';
+
+        // მეთოდი 1: Telegram startapp (tg.initDataUnsafe.start_param)
+        const startParam = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+        if (startParam) {
+            const idx = startParam.indexOf('_');
+            if (idx > 0) {
+                opType = startParam.substring(0, idx);
+                buyerId = startParam.substring(idx + 1) || '0';
+            } else {
+                opType = startParam;
+            }
+        }
+
+        // მეთოდი 2: URL query params (fallback)
+        if (!opType) {
+            const urlParams = new URLSearchParams(window.location.search);
+            opType = urlParams.get('op') || '';
+            buyerId = urlParams.get('bid') || '0';
+        }
+
+        // header-ში ოპერაციის ტიპის ჩვენება
+        const headerEl = document.getElementById('headerText');
+        if (opType === 'SALE') {
+            headerEl.textContent = '📷 სკანერი — 📤 გასაწერი';
+        } else if (opType === 'WRITEOFF') {
+            headerEl.textContent = '📷 სკანერი — 📥 ჩამოსაწერი';
+        }
+
         let scannedItems = [];
         let lastScannedCode = '';
         let lastScannedTime = 0;
+        let scannerRunning = false;
 
-        // html5-qrcode ინიციალიზაცია
-        const scanner = new Html5Qrcode("reader");
+        const html5Qrcode = new Html5Qrcode("reader");
 
         const config = {
-            fps: 10,
+            fps: 15,
             qrbox: { width: 280, height: 150 },
             aspectRatio: 1.5,
             formatsToSupport: [
@@ -173,35 +224,46 @@
 
         function onScanSuccess(decodedText, decodedResult) {
             const now = Date.now();
-            // დუბლიკატის თავიდან აცილება — იგივე კოდი 2 წამში
+            // იგივე კოდი 2 წამში — იგნორი (რომ არ დაითვალოს ორჯერ)
             if (decodedText === lastScannedCode && (now - lastScannedTime) < 2000) {
                 return;
             }
             lastScannedCode = decodedText;
             lastScannedTime = now;
 
-            // ვიბრაცია (თუ აქვს)
+            // ვიბრაცია
             if (navigator.vibrate) navigator.vibrate(100);
-            // Telegram haptic feedback
-            if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+            try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
 
             addCode(decodedText);
+
+            // ბოლო სკანირების ინდიკატორი
+            document.getElementById('lastScan').textContent = '✅ ' + decodedText;
+            setTimeout(() => {
+                document.getElementById('lastScan').textContent = '';
+            }, 2000);
         }
 
         function onScanFailure(error) {
-            // იგნორი — ყოველ ფრეიმზე იძახებს
+            // იგნორი — კამერა აგრძელებს სკანირებას
         }
 
-        // კამერის გაშვება (უკანა კამერა)
-        scanner.start(
-            { facingMode: "environment" },
-            config,
-            onScanSuccess,
-            onScanFailure
-        ).catch(err => {
-            document.getElementById('emptyMsg').textContent =
-                'კამერაზე წვდომა ვერ მოხერხდა: ' + err;
-        });
+        // კამერის გაშვება
+        function startScanner() {
+            html5Qrcode.start(
+                { facingMode: "environment" },
+                config,
+                onScanSuccess,
+                onScanFailure
+            ).then(() => {
+                scannerRunning = true;
+            }).catch(err => {
+                document.getElementById('scanList').innerHTML =
+                    '<div class="empty-msg">❌ კამერაზე წვდომა ვერ მოხერხდა: ' + err + '</div>';
+            });
+        }
+
+        startScanner();
 
         function addCode(code) {
             code = code.trim();
@@ -231,12 +293,11 @@
 
         function renderList() {
             const listEl = document.getElementById('scanList');
-            const emptyEl = document.getElementById('emptyMsg');
             const sendBtn = document.getElementById('sendBtn');
             const totalBar = document.getElementById('totalBar');
 
             if (scannedItems.length === 0) {
-                listEl.innerHTML = '<div class="empty-msg" id="emptyMsg">დასკანირე ბარკოდი კამერით...</div>';
+                listEl.innerHTML = '<div class="empty-msg">დასკანირე ბარკოდი კამერით...</div>';
                 sendBtn.disabled = true;
                 totalBar.textContent = '';
                 return;
@@ -269,13 +330,60 @@
             scannedItems = [];
             lastScannedCode = '';
             renderList();
+            document.getElementById('statusMsg').textContent = '';
         }
 
         function sendData() {
             if (scannedItems.length === 0) return;
 
-            const data = JSON.stringify(scannedItems);
-            tg.sendData(data);
+            const statusMsg = document.getElementById('statusMsg');
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+
+            const doSend = () => {
+                try {
+                    // Deep link ფორმატი: SCAN_OP-BID-code1.qty1.code2.qty2
+                    // Telegram start პარამეტრი: მხოლოდ A-Z, a-z, 0-9, _, -
+                    const op = opType || 'X';
+                    const bid = buyerId || '0';
+
+                    // კოდები: code.qty ფორმატით, გამყოფი "-"
+                    const codeParts = scannedItems.map(item => item.code + '.' + item.qty);
+
+                    // SCAN_OP-BID-code1.qty1-code2.qty2
+                    const param = 'SCAN_' + op + '-' + bid + '-' + codeParts.join('-');
+
+                    // Telegram deep link-ის ლიმიტი 64 სიმბოლოა
+                    if (param.length > 64) {
+                        statusMsg.textContent = '⚠️ ძალიან ბევრი კოდია (' + param.length + '/64). შეამცირე ან გადაიღე ფოტო.';
+                        statusMsg.className = 'status-msg status-err';
+                        sendBtn.disabled = false;
+                        return;
+                    }
+
+                    const deepLink = 'https://t.me/' + BOT_NAME + '?start=' + param;
+                    statusMsg.textContent = '✅ გადამისამართება ბოტზე...';
+                    statusMsg.className = 'status-msg status-ok';
+
+                    tg.openTelegramLink(deepLink);
+                    setTimeout(() => { tg.close(); }, 500);
+                } catch(e) {
+                    statusMsg.textContent = '❌ გაგზავნა ვერ მოხერხდა: ' + e;
+                    statusMsg.className = 'status-msg status-err';
+                    sendBtn.disabled = false;
+                }
+            };
+
+            if (scannerRunning) {
+                html5Qrcode.stop().then(() => {
+                    scannerRunning = false;
+                    doSend();
+                }).catch(() => {
+                    doSend();
+                });
+            } else {
+                doSend();
+            }
         }
 
         function escapeHtml(text) {
@@ -284,11 +392,14 @@
             return div.innerHTML;
         }
 
-        // Telegram-ის Back ღილაკი
+        // Back ღილაკი
         tg.BackButton.show();
         tg.BackButton.onClick(() => {
-            scanner.stop().catch(() => {});
-            tg.close();
+            if (scannerRunning) {
+                html5Qrcode.stop().then(() => { tg.close(); }).catch(() => { tg.close(); });
+            } else {
+                tg.close();
+            }
         });
     </script>
 </body>
