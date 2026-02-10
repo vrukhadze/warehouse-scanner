@@ -164,6 +164,8 @@
         tg.expand();
 
         const BOT_NAME = 'adtecwarehousebot';
+        // სერვერის მისამართი
+        const SCAN_SERVER = 'http://31.146.148.150:8443/scan';
 
         // ოპერაციის კონტექსტის წაკითხვა
         // startapp პარამეტრი: "SALE_123" ან "WRITEOFF_0"
@@ -339,40 +341,45 @@
             const statusMsg = document.getElementById('statusMsg');
             const sendBtn = document.getElementById('sendBtn');
             sendBtn.disabled = true;
+            statusMsg.textContent = '⏳ იგზავნება...';
+            statusMsg.className = 'status-msg';
+
+            // იუზერის ID Telegram WebApp-დან
+            const userId = (tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || 0;
+
+            const payload = {
+                user_id: userId,
+                op: opType || '',
+                bid: buyerId || '0',
+                items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
+            };
 
             const doSend = () => {
-                try {
-                    // Deep link ფორმატი: SCAN_OP-BID-code1.qty1.code2.qty2
-                    // Telegram start პარამეტრი: მხოლოდ A-Z, a-z, 0-9, _, -
-                    const op = opType || 'X';
-                    const bid = buyerId || '0';
-
-                    // კოდები: code.qty ფორმატით, გამყოფი "-"
-                    const codeParts = scannedItems.map(item => item.code + '.' + item.qty);
-
-                    // SCAN_OP-BID-code1.qty1-code2.qty2
-                    const param = 'SCAN_' + op + '-' + bid + '-' + codeParts.join('-');
-
-                    // Telegram deep link-ის ლიმიტი 64 სიმბოლოა
-                    if (param.length > 64) {
-                        statusMsg.textContent = '⚠️ ძალიან ბევრი კოდია (' + param.length + '/64). შეამცირე ან გადაიღე ფოტო.';
+                fetch(SCAN_SERVER, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                })
+                .then(resp => resp.json())
+                .then(data => {
+                    if (data.ok) {
+                        statusMsg.textContent = '✅ გაიგზავნა! შეამოწმე ბოტის ჩატი.';
+                        statusMsg.className = 'status-msg status-ok';
+                        // 2 წამში Mini App დაიხურება
+                        setTimeout(() => {
+                            try { tg.close(); } catch(e) {}
+                        }, 2000);
+                    } else {
+                        statusMsg.textContent = '❌ შეცდომა: ' + (data.error || 'unknown');
                         statusMsg.className = 'status-msg status-err';
                         sendBtn.disabled = false;
-                        return;
                     }
-
-                    const deepLink = 'https://t.me/' + BOT_NAME + '?start=' + param;
-
-                    // Mini App-ის დახურვა და deep link-ზე გადასვლა
-                    try { tg.close(); } catch(ex) {}
-                    setTimeout(() => {
-                        window.location.href = deepLink;
-                    }, 300);
-                } catch(e) {
-                    statusMsg.textContent = '❌ გაგზავნა ვერ მოხერხდა: ' + e;
+                })
+                .catch(err => {
+                    statusMsg.textContent = '❌ სერვერთან კავშირი ვერ მოხერხდა: ' + err;
                     statusMsg.className = 'status-msg status-err';
                     sendBtn.disabled = false;
-                }
+                });
             };
 
             if (scannerRunning) {
