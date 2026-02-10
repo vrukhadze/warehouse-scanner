@@ -359,20 +359,14 @@
                 .then(r => r.json())
                 .then(result => {
                     if (result.key) {
-                        statusMsg.textContent = '✅ გაიგზავნა! გადადიხარ ბოტში...';
-                        statusMsg.className = 'status-msg status-ok';
-                        // deep link — ბოტი მიიღებს /start SK_<key>
                         const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
-                        // ჯერ Mini App იხურება, მერე deep link იხსნება
-                        setTimeout(() => {
-                            try {
-                                // openLink ბრაუზერში ხსნის — deep link პარამეტრი არ იკარგება
-                                tg.openLink(deepLink);
-                                tg.close();
-                            } catch(e) {
-                                window.location.href = deepLink;
-                            }
-                        }, 300);
+                        // Mini App დაიხურება და იუზერს ლინკი გაუხსნის
+                        statusMsg.innerHTML = '✅ მონაცემები შენახულია!<br><br>' +
+                            '<a href="' + deepLink + '" style="display:inline-block;padding:14px 28px;' +
+                            'background:#0088cc;color:#fff;border-radius:12px;text-decoration:none;' +
+                            'font-size:16px;font-weight:600;">📨 გაგზავნა ბოტში</a><br><br>' +
+                            '<span style="font-size:12px;color:#aaa;">დააჭირე ღილაკს ბოტში გადასასვლელად</span>';
+                        statusMsg.className = 'status-msg';
                     } else {
                         statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
                         statusMsg.className = 'status-msg status-err';
