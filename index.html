@@ -363,14 +363,16 @@
                         statusMsg.className = 'status-msg status-ok';
                         // deep link — ბოტი მიიღებს /start SK_<key>
                         const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
+                        // ჯერ Mini App იხურება, მერე deep link იხსნება
                         setTimeout(() => {
                             try {
-                                tg.openTelegramLink(deepLink);
+                                // openLink ბრაუზერში ხსნის — deep link პარამეტრი არ იკარგება
+                                tg.openLink(deepLink);
+                                tg.close();
                             } catch(e) {
-                                // fallback — პირდაპირი redirect
                                 window.location.href = deepLink;
                             }
-                        }, 500);
+                        }, 300);
                     } else {
                         statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
                         statusMsg.className = 'status-msg status-err';
