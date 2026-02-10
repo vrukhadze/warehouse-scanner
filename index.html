@@ -163,27 +163,31 @@
         tg.ready();
         tg.expand();
 
-        // ოპერაციის კონტექსტის წაკითხვა URL query params-დან
-        // KeyboardButton web_app URL: ?op=SALE&bid=123
+        // Cloudflare Worker relay URL
+        const WORKER_URL = 'https://scanner-relay.vrukhadze.workers.dev';
+        const BOT_NAME = 'adtecwarehousebot';
+
+        // ოპერაციის კონტექსტის წაკითხვა
         let opType = '';
         let buyerId = '0';
 
-        const urlParams = new URLSearchParams(window.location.search);
-        opType = urlParams.get('op') || '';
-        buyerId = urlParams.get('bid') || '0';
-
-        // fallback: Telegram startapp პარამეტრი
-        if (!opType) {
-            const startParam = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
-            if (startParam) {
-                const idx = startParam.indexOf('_');
-                if (idx > 0) {
-                    opType = startParam.substring(0, idx);
-                    buyerId = startParam.substring(idx + 1) || '0';
-                } else {
-                    opType = startParam;
-                }
+        // მეთოდი 1: Telegram startapp პარამეტრი (t.me/bot/scanner?startapp=SALE_123)
+        const startParam = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+        if (startParam) {
+            const idx = startParam.indexOf('_');
+            if (idx > 0) {
+                opType = startParam.substring(0, idx);
+                buyerId = startParam.substring(idx + 1) || '0';
+            } else {
+                opType = startParam;
             }
+        }
+
+        // მეთოდი 2: URL query params (fallback)
+        if (!opType) {
+            const urlParams = new URLSearchParams(window.location.search);
+            opType = urlParams.get('op') || '';
+            buyerId = urlParams.get('bid') || '0';
         }
 
         // header-ში ოპერაციის ტიპის ჩვენება
@@ -333,24 +337,45 @@
         function sendData() {
             if (scannedItems.length === 0) return;
 
+            const statusMsg = document.getElementById('statusMsg');
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+            statusMsg.textContent = '⏳ იგზავნება...';
+            statusMsg.className = 'status-msg';
+
             const payload = {
                 op: opType || '',
                 bid: buyerId || '0',
                 items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
             };
 
-            // კამერის გაჩერება და Telegram-ში გაგზავნა
+            // Cloudflare Worker-ზე გაგზავნა → deep link-ით ბოტში გადასვლა
             const doSend = () => {
-                try {
-                    tg.sendData(JSON.stringify(payload));
-                    // sendData() ავტომატურად ხურავს Mini App-ს
-                    // მონაცემები პირდაპირ ბოტს მიდის web_app_data სახით
-                } catch(e) {
-                    const statusMsg = document.getElementById('statusMsg');
-                    statusMsg.textContent = '❌ შეცდომა: ' + e.message;
+                fetch(WORKER_URL + '/scan', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.key) {
+                        statusMsg.textContent = '✅ გაიგზავნა! გადადიხარ ბოტში...';
+                        statusMsg.className = 'status-msg status-ok';
+                        // deep link — ბოტი მიიღებს /start SK_<key>
+                        setTimeout(() => {
+                            window.location.href = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
+                        }, 500);
+                    } else {
+                        statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
+                        statusMsg.className = 'status-msg status-err';
+                        sendBtn.disabled = false;
+                    }
+                })
+                .catch(err => {
+                    statusMsg.textContent = '❌ კავშირი ვერ მოხერხდა: ' + err.message;
                     statusMsg.className = 'status-msg status-err';
-                    document.getElementById('sendBtn').disabled = false;
-                }
+                    sendBtn.disabled = false;
+                });
             };
 
             if (scannerRunning) {
