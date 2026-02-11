@@ -271,6 +271,8 @@
             if (!code) return;
             // ბარკოდებში ხშირად -00 სუფიქსი ემატება — მოვჭრათ
             code = code.replace(/-00$/, '');
+            // ტირეების მოხსნა (A7U4-0RD → A7U40RD) — Sheet-ებში ტირეს გარეშეა
+            code = code.replace(/-/g, '');
 
             const existing = scannedItems.find(item => item.code === code);
             if (existing) {
