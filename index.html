@@ -29,6 +29,40 @@
             margin: 0 auto;
         }
         #reader video { border-radius: 8px; }
+        /* Native კამერის კონტეინერი */
+        #nativeCamera {
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            position: relative;
+            display: none;
+        }
+        #nativeCamera video {
+            width: 100%;
+            border-radius: 8px;
+        }
+        #nativeCamera canvas {
+            display: none;
+        }
+        .scan-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 280px;
+            height: 150px;
+            border: 2px solid rgba(46, 204, 113, 0.7);
+            border-radius: 8px;
+            pointer-events: none;
+        }
+        .scan-overlay.detecting {
+            border-color: #f39c12;
+            animation: pulse 0.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
         .scan-controls {
             display: flex;
             justify-content: center;
@@ -167,6 +201,12 @@
             font-size: 12px;
             color: #2ecc71;
         }
+        .confidence-bar {
+            text-align: center;
+            padding: 2px;
+            font-size: 11px;
+            color: var(--tg-theme-hint-color, #888);
+        }
         /* ხელით შეყვანის ველი */
         .manual-input-bar {
             display: flex;
@@ -192,12 +232,27 @@
             font-weight: 600;
             cursor: pointer;
         }
+        .engine-badge {
+            text-align: center;
+            padding: 2px 8px;
+            font-size: 10px;
+            color: var(--tg-theme-hint-color, #666);
+        }
     </style>
 </head>
 <body>
     <div class="header" id="headerText">📷 ბარკოდის სკანერი</div>
+    <!-- Native BarcodeDetector camera -->
+    <div id="nativeCamera">
+        <video id="nativeVideo" autoplay playsinline muted></video>
+        <canvas id="nativeCanvas"></canvas>
+        <div class="scan-overlay" id="scanOverlay"></div>
+    </div>
+    <!-- html5-qrcode fallback -->
     <div id="reader"></div>
     <div class="last-scan" id="lastScan"></div>
+    <div class="confidence-bar" id="confidenceBar"></div>
+    <div class="engine-badge" id="engineBadge"></div>
     <div class="scan-controls">
         <button class="scan-btn" id="scanBtn" onclick="toggleScanner()">📸 სკანირება</button>
     </div>
@@ -259,13 +314,71 @@
         let lastScannedTime = 0;
 
         // კამერის მდგომარეობა
-        let cameraStarted = false;  // კამერა გაშვებულია (stream აქტიურია)
-        let scanningActive = false; // სკანირება აქტიურია (callback ამუშავებს)
+        let cameraStarted = false;
+        let scanningActive = false;
 
-        const html5Qrcode = new Html5Qrcode("reader");
+        // ===== Multi-scan consensus =====
+        // რამდენიმე ფრეიმის სკანირება და ყველაზე ხშირი შედეგის არჩევა
+        const CONSENSUS_THRESHOLD = 3;  // მინ. 3-ჯერ ერთი და იგივე კოდი
+        const CONSENSUS_WINDOW = 2000;  // 2 წამის ფანჯარა
+        let scanBuffer = [];  // [{code, time}, ...]
 
-        const config = {
-            fps: 10,
+        function addToBuffer(code) {
+            const now = Date.now();
+            // ძველი ჩანაწერების წაშლა (2 წამზე ძველი)
+            scanBuffer = scanBuffer.filter(s => (now - s.time) < CONSENSUS_WINDOW);
+            scanBuffer.push({ code: code, time: now });
+
+            // რომელი კოდი ჩანს ყველაზე ხშირად?
+            const counts = {};
+            scanBuffer.forEach(s => {
+                counts[s.code] = (counts[s.code] || 0) + 1;
+            });
+
+            let bestCode = null;
+            let bestCount = 0;
+            for (const [c, cnt] of Object.entries(counts)) {
+                if (cnt > bestCount) {
+                    bestCount = cnt;
+                    bestCode = c;
+                }
+            }
+
+            // Confidence ბარის განახლება
+            const confBar = document.getElementById('confidenceBar');
+            const overlay = document.getElementById('scanOverlay');
+            if (bestCode && bestCount < CONSENSUS_THRESHOLD) {
+                confBar.textContent = `🔍 ${bestCode} (${bestCount}/${CONSENSUS_THRESHOLD})`;
+                if (overlay) overlay.classList.add('detecting');
+            }
+
+            if (bestCode && bestCount >= CONSENSUS_THRESHOLD) {
+                // ✅ კონსენსუსი მიღწეულია!
+                scanBuffer = [];
+                confBar.textContent = '';
+                if (overlay) overlay.classList.remove('detecting');
+                return bestCode;
+            }
+
+            return null;  // ჯერ არ არის საკმარისი
+        }
+
+        // ===== Engine Detection =====
+        const useNative = ('BarcodeDetector' in window);
+        let nativeBarcodeDetector = null;
+        let nativeStream = null;
+        let nativeAnimFrame = null;
+        let html5Qrcode = null;
+
+        if (useNative) {
+            document.getElementById('engineBadge').textContent = '⚡ Native BarcodeDetector';
+        } else {
+            document.getElementById('engineBadge').textContent = '📦 html5-qrcode (ZXing)';
+            html5Qrcode = new Html5Qrcode("reader");
+        }
+
+        const html5Config = {
+            fps: 15,
             qrbox: { width: 280, height: 150 },
             aspectRatio: 1.5,
             formatsToSupport: [
@@ -282,61 +395,113 @@
             ]
         };
 
-        function onScanSuccess(decodedText, decodedResult) {
-            // თუ სკანირება პაუზაზეა — იგნორი
-            if (!scanningActive) return;
-
-            const now = Date.now();
-            if (decodedText === lastScannedCode && (now - lastScannedTime) < 2000) {
-                return;
-            }
-            lastScannedCode = decodedText;
-            lastScannedTime = now;
-
-            // ვიბრაცია
-            if (navigator.vibrate) navigator.vibrate(100);
-            try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
-
-            addCode(decodedText);
-
-            document.getElementById('lastScan').textContent = '✅ ' + decodedText;
-            setTimeout(() => {
-                document.getElementById('lastScan').textContent = '';
-            }, 2000);
-
-            // სკანირების შემდეგ პაუზა (კამერა რჩება, მხოლოდ callback ჩერდება)
-            pauseScanning();
-        }
-
-        function onScanFailure(error) {
-            // იგნორი
-        }
-
-        // ღილაკის toggle
-        function toggleScanner() {
-            if (!cameraStarted) {
-                // პირველად — კამერის გაშვება + სკანირება
-                startCamera();
-            } else if (scanningActive) {
-                // სკანირება აქტიურია — პაუზა
-                pauseScanning();
-            } else {
-                // პაუზაზეა — სკანირების გაგრძელება
-                resumeScanning();
-            }
-        }
-
-        // კამერის გაშვება (ერთხელ, ნებართვა ერთხელ)
-        function startCamera() {
+        // ===== Native BarcodeDetector სკანირება =====
+        async function startNativeCamera() {
             const scanBtn = document.getElementById('scanBtn');
             scanBtn.disabled = true;
             scanBtn.textContent = '⏳ კამერა იხსნება...';
 
+            try {
+                // BarcodeDetector ინიციალიზაცია
+                nativeBarcodeDetector = new BarcodeDetector({
+                    formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'code_93',
+                              'upc_a', 'upc_e', 'itf', 'qr_code', 'data_matrix']
+                });
+
+                // კამერის გახსნა მაღალი რეზოლუციით
+                nativeStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                        focusMode: { ideal: 'continuous' }
+                    }
+                });
+
+                const video = document.getElementById('nativeVideo');
+                video.srcObject = nativeStream;
+                await video.play();
+
+                document.getElementById('nativeCamera').style.display = 'block';
+                document.getElementById('reader').style.display = 'none';
+
+                cameraStarted = true;
+                scanningActive = true;
+                scanBtn.disabled = false;
+                scanBtn.textContent = '⏸ პაუზა';
+                scanBtn.className = 'scan-btn scanning';
+
+                // სკანირების ციკლის დაწყება
+                nativeScanLoop();
+            } catch (err) {
+                scanBtn.disabled = false;
+                scanBtn.textContent = '📸 სკანირება';
+                scanBtn.className = 'scan-btn';
+                document.getElementById('lastScan').textContent = '❌ კამერა: ' + err.message;
+                setTimeout(() => {
+                    document.getElementById('lastScan').textContent = '';
+                }, 3000);
+            }
+        }
+
+        async function nativeScanLoop() {
+            if (!cameraStarted) return;
+
+            const video = document.getElementById('nativeVideo');
+            if (video.readyState < 2) {
+                nativeAnimFrame = requestAnimationFrame(nativeScanLoop);
+                return;
+            }
+
+            if (scanningActive && nativeBarcodeDetector) {
+                try {
+                    const barcodes = await nativeBarcodeDetector.detect(video);
+                    for (const barcode of barcodes) {
+                        if (barcode.rawValue) {
+                            handleRawScan(barcode.rawValue);
+                        }
+                    }
+                } catch (err) {
+                    // იგნორი — ფრეიმის დამუშავების შეცდომა
+                }
+            }
+
+            // ყოველ ~100ms ახალი ფრეიმის სკანირება
+            setTimeout(() => {
+                nativeAnimFrame = requestAnimationFrame(nativeScanLoop);
+            }, 80);
+        }
+
+        function stopNativeCamera() {
+            if (nativeAnimFrame) {
+                cancelAnimationFrame(nativeAnimFrame);
+                nativeAnimFrame = null;
+            }
+            if (nativeStream) {
+                nativeStream.getTracks().forEach(t => t.stop());
+                nativeStream = null;
+            }
+            const video = document.getElementById('nativeVideo');
+            if (video) video.srcObject = null;
+            document.getElementById('nativeCamera').style.display = 'none';
+            cameraStarted = false;
+            scanningActive = false;
+        }
+
+        // ===== html5-qrcode fallback =====
+        function startHtml5Camera() {
+            const scanBtn = document.getElementById('scanBtn');
+            scanBtn.disabled = true;
+            scanBtn.textContent = '⏳ კამერა იხსნება...';
+
+            document.getElementById('nativeCamera').style.display = 'none';
+            document.getElementById('reader').style.display = 'block';
+
             html5Qrcode.start(
                 { facingMode: "environment" },
-                config,
-                onScanSuccess,
-                onScanFailure
+                html5Config,
+                onHtml5ScanSuccess,
+                () => {} // failure იგნორი
             ).then(() => {
                 cameraStarted = true;
                 scanningActive = true;
@@ -354,9 +519,69 @@
             });
         }
 
+        function onHtml5ScanSuccess(decodedText, decodedResult) {
+            if (!scanningActive) return;
+            handleRawScan(decodedText);
+        }
+
+        // ===== საერთო სკანირების ლოგიკა (ორივე engine-სთვის) =====
+        function handleRawScan(rawCode) {
+            if (!scanningActive) return;
+            if (!rawCode || rawCode.trim().length === 0) return;
+
+            const cleaned = cleanCode(rawCode);
+            if (!cleaned) return;
+
+            // Multi-scan consensus — აკუმულირება
+            const confirmed = addToBuffer(cleaned);
+            if (!confirmed) return;  // ჯერ არ არის კონსენსუსი
+
+            // ✅ კონსენსუსით დადასტურებული კოდი!
+            const now = Date.now();
+            // დუბლიკატის ფილტრი (იგივე კოდი 3 წამში)
+            if (confirmed === lastScannedCode && (now - lastScannedTime) < 3000) {
+                return;
+            }
+            lastScannedCode = confirmed;
+            lastScannedTime = now;
+
+            // ვიბრაცია
+            if (navigator.vibrate) navigator.vibrate(100);
+            try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+
+            addCode(confirmed);
+
+            document.getElementById('lastScan').textContent = '✅ ' + confirmed;
+            setTimeout(() => {
+                document.getElementById('lastScan').textContent = '';
+            }, 2000);
+
+            // სკანირების შემდეგ პაუზა
+            pauseScanning();
+        }
+
+        // ===== ღილაკის toggle =====
+        function toggleScanner() {
+            if (!cameraStarted) {
+                if (useNative) {
+                    startNativeCamera();
+                } else {
+                    startHtml5Camera();
+                }
+            } else if (scanningActive) {
+                pauseScanning();
+            } else {
+                resumeScanning();
+            }
+        }
+
         // სკანირების პაუზა (კამერა რჩება აქტიური!)
         function pauseScanning() {
             scanningActive = false;
+            scanBuffer = [];
+            document.getElementById('confidenceBar').textContent = '';
+            const overlay = document.getElementById('scanOverlay');
+            if (overlay) overlay.classList.remove('detecting');
             const scanBtn = document.getElementById('scanBtn');
             scanBtn.textContent = '📸 სკანირება';
             scanBtn.className = 'scan-btn paused';
@@ -365,7 +590,9 @@
         // სკანირების გაგრძელება (კამერა უკვე მუშაობს)
         function resumeScanning() {
             scanningActive = true;
-            lastScannedCode = '';  // წინა კოდი დავავიწყოთ რომ ხელახლა ამოიცნოს
+            lastScannedCode = '';
+            scanBuffer = [];
+            document.getElementById('confidenceBar').textContent = '';
             const scanBtn = document.getElementById('scanBtn');
             scanBtn.textContent = '⏸ პაუზა';
             scanBtn.className = 'scan-btn scanning';
@@ -375,9 +602,13 @@
         function cleanCode(code) {
             code = code.trim();
             if (!code) return '';
+            // -00 სუფიქსი
             code = code.replace(/-00$/, '');
+            // ტირეების მოშორება
             code = code.replace(/-/g, '');
+            // CODE39 start/stop *
             code = code.replace(/^\*|\*$/g, '');
+            // P პრეფიქსი
             if (code.length >= 5 && /^P[A-Z0-9]/i.test(code)) {
                 const withoutP = code.substring(1);
                 if (/\d/.test(withoutP)) {
@@ -466,8 +697,10 @@
         function clearAll() {
             scannedItems = [];
             lastScannedCode = '';
+            scanBuffer = [];
             renderList();
             document.getElementById('statusMsg').textContent = '';
+            document.getElementById('confidenceBar').textContent = '';
         }
 
         function sendData() {
@@ -479,8 +712,9 @@
             statusMsg.textContent = '⏳ იგზავნება...';
             statusMsg.className = 'status-msg';
 
-            // სკანირება გავაჩეროთ (არა კამერა)
+            // სკანირება გავაჩეროთ
             scanningActive = false;
+            scanBuffer = [];
 
             const payload = {
                 op: opType || '',
@@ -508,14 +742,7 @@
                             '<span style="font-size:12px;color:#aaa;">დააჭირე ღილაკს ბოტში გადასასვლელად</span>';
                         statusMsg.className = 'status-msg';
                         // კამერა გავაჩეროთ გაგზავნის შემდეგ
-                        if (cameraStarted) {
-                            html5Qrcode.stop().then(() => {
-                                cameraStarted = false;
-                                const scanBtn = document.getElementById('scanBtn');
-                                scanBtn.textContent = '📸 სკანირება';
-                                scanBtn.className = 'scan-btn';
-                            }).catch(() => {});
-                        }
+                        stopAllCameras();
                     } else {
                         statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
                         statusMsg.className = 'status-msg status-err';
@@ -532,6 +759,22 @@
             doSend();
         }
 
+        function stopAllCameras() {
+            if (useNative) {
+                stopNativeCamera();
+            } else if (html5Qrcode && cameraStarted) {
+                html5Qrcode.stop().then(() => {
+                    cameraStarted = false;
+                    const scanBtn = document.getElementById('scanBtn');
+                    scanBtn.textContent = '📸 სკანირება';
+                    scanBtn.className = 'scan-btn';
+                }).catch(() => {});
+            }
+            const scanBtn = document.getElementById('scanBtn');
+            scanBtn.textContent = '📸 სკანირება';
+            scanBtn.className = 'scan-btn';
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
@@ -541,11 +784,8 @@
         // Back ღილაკი
         tg.BackButton.show();
         tg.BackButton.onClick(() => {
-            if (cameraStarted) {
-                html5Qrcode.stop().then(() => { tg.close(); }).catch(() => { tg.close(); });
-            } else {
-                tg.close();
-            }
+            stopAllCameras();
+            tg.close();
         });
     </script>
 </body>
