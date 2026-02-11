@@ -49,6 +49,9 @@
         .scan-btn.scanning {
             background: #e74c3c;
         }
+        .scan-btn.paused {
+            background: #f39c12;
+        }
         .scan-btn:active { opacity: 0.7; }
         .scan-btn:disabled { opacity: 0.4; }
         .scan-list {
@@ -226,7 +229,6 @@
         let opType = '';
         let buyerId = '0';
 
-        // მეთოდი 1: Telegram startapp პარამეტრი (t.me/bot/scanner?startapp=SALE_123)
         const startParam = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
         if (startParam) {
             const idx = startParam.indexOf('_');
@@ -237,15 +239,12 @@
                 opType = startParam;
             }
         }
-
-        // მეთოდი 2: URL query params (fallback)
         if (!opType) {
             const urlParams = new URLSearchParams(window.location.search);
             opType = urlParams.get('op') || '';
             buyerId = urlParams.get('bid') || '0';
         }
 
-        // header-ში ოპერაციის ტიპის ჩვენება
         const headerEl = document.getElementById('headerText');
         if (opType === 'SALE') {
             headerEl.textContent = '📷 სკანერი — 📤 გასაწერი';
@@ -258,8 +257,10 @@
         let scannedItems = [];
         let lastScannedCode = '';
         let lastScannedTime = 0;
-        let scannerRunning = false;
-        let cameraInitialized = false;
+
+        // კამერის მდგომარეობა
+        let cameraStarted = false;  // კამერა გაშვებულია (stream აქტიურია)
+        let scanningActive = false; // სკანირება აქტიურია (callback ამუშავებს)
 
         const html5Qrcode = new Html5Qrcode("reader");
 
@@ -282,8 +283,10 @@
         };
 
         function onScanSuccess(decodedText, decodedResult) {
+            // თუ სკანირება პაუზაზეა — იგნორი
+            if (!scanningActive) return;
+
             const now = Date.now();
-            // იგივე კოდი 2 წამში — იგნორი (რომ არ დაითვალოს ორჯერ)
             if (decodedText === lastScannedCode && (now - lastScannedTime) < 2000) {
                 return;
             }
@@ -296,31 +299,35 @@
 
             addCode(decodedText);
 
-            // ბოლო სკანირების ინდიკატორი
             document.getElementById('lastScan').textContent = '✅ ' + decodedText;
             setTimeout(() => {
                 document.getElementById('lastScan').textContent = '';
             }, 2000);
 
-            // სკანირების შემდეგ ავტომატურად გაჩერება (ერთ-ერთი სკანირება)
-            stopScanner();
+            // სკანირების შემდეგ პაუზა (კამერა რჩება, მხოლოდ callback ჩერდება)
+            pauseScanning();
         }
 
         function onScanFailure(error) {
-            // იგნორი — კამერა აგრძელებს სკანირებას
+            // იგნორი
         }
 
-        // სკანირების ღილაკის toggle
+        // ღილაკის toggle
         function toggleScanner() {
-            if (scannerRunning) {
-                stopScanner();
+            if (!cameraStarted) {
+                // პირველად — კამერის გაშვება + სკანირება
+                startCamera();
+            } else if (scanningActive) {
+                // სკანირება აქტიურია — პაუზა
+                pauseScanning();
             } else {
-                startScanner();
+                // პაუზაზეა — სკანირების გაგრძელება
+                resumeScanning();
             }
         }
 
-        // კამერის გაშვება
-        function startScanner() {
+        // კამერის გაშვება (ერთხელ, ნებართვა ერთხელ)
+        function startCamera() {
             const scanBtn = document.getElementById('scanBtn');
             scanBtn.disabled = true;
             scanBtn.textContent = '⏳ კამერა იხსნება...';
@@ -331,14 +338,15 @@
                 onScanSuccess,
                 onScanFailure
             ).then(() => {
-                scannerRunning = true;
-                cameraInitialized = true;
+                cameraStarted = true;
+                scanningActive = true;
                 scanBtn.disabled = false;
-                scanBtn.textContent = '⏹ გაჩერება';
-                scanBtn.classList.add('scanning');
+                scanBtn.textContent = '⏸ პაუზა';
+                scanBtn.className = 'scan-btn scanning';
             }).catch(err => {
                 scanBtn.disabled = false;
                 scanBtn.textContent = '📸 სკანირება';
+                scanBtn.className = 'scan-btn';
                 document.getElementById('lastScan').textContent = '❌ კამერა: ' + err;
                 setTimeout(() => {
                     document.getElementById('lastScan').textContent = '';
@@ -346,47 +354,36 @@
             });
         }
 
-        // კამერის გაჩერება
-        function stopScanner() {
+        // სკანირების პაუზა (კამერა რჩება აქტიური!)
+        function pauseScanning() {
+            scanningActive = false;
             const scanBtn = document.getElementById('scanBtn');
-            if (scannerRunning) {
-                html5Qrcode.stop().then(() => {
-                    scannerRunning = false;
-                    scanBtn.textContent = '📸 სკანირება';
-                    scanBtn.classList.remove('scanning');
-                }).catch(() => {
-                    scannerRunning = false;
-                    scanBtn.textContent = '📸 სკანირება';
-                    scanBtn.classList.remove('scanning');
-                });
-            }
+            scanBtn.textContent = '📸 სკანირება';
+            scanBtn.className = 'scan-btn paused';
         }
 
-        // კოდის გაწმენდა — ტირეების, P პრეფიქსის და სხვა ზედმეტის მოხსნა
+        // სკანირების გაგრძელება (კამერა უკვე მუშაობს)
+        function resumeScanning() {
+            scanningActive = true;
+            lastScannedCode = '';  // წინა კოდი დავავიწყოთ რომ ხელახლა ამოიცნოს
+            const scanBtn = document.getElementById('scanBtn');
+            scanBtn.textContent = '⏸ პაუზა';
+            scanBtn.className = 'scan-btn scanning';
+        }
+
+        // კოდის გაწმენდა
         function cleanCode(code) {
             code = code.trim();
             if (!code) return '';
-
-            // ბარკოდებში ხშირად -00 სუფიქსი ემატება — მოვჭრათ
             code = code.replace(/-00$/, '');
-
-            // ტირეების მოხსნა (A7U4-0RD → A7U40RD) — Sheet-ებში ტირეს გარეშეა
             code = code.replace(/-/g, '');
-
-            // CODE39 start/stop სიმბოლოების მოხსნა
             code = code.replace(/^\*|\*$/g, '');
-
-            // 'P' პრეფიქსის მოხსნა — თუ კოდი 'P'-ით იწყება და შემდეგ ალფანუმერიკული კოდია
-            // მაგ: P4982978703410 → 4982978703410, PA5AW0RD → A5AW0RD
-            // მხოლოდ თუ 'P'-ს შემდეგ 4+ სიმბოლოა
             if (code.length >= 5 && /^P[A-Z0-9]/i.test(code)) {
                 const withoutP = code.substring(1);
-                // P მოვხსნათ მხოლოდ თუ შედეგი ჰგავს ვალიდურ კოდს (ციფრებს ან ასო-ციფრებს შეიცავს)
                 if (/\d/.test(withoutP)) {
                     code = withoutP;
                 }
             }
-
             return code;
         }
 
@@ -403,7 +400,6 @@
             renderList();
         }
 
-        // ხელით კოდის შეყვანა
         function addManualCode() {
             const input = document.getElementById('manualCode');
             const code = input.value.trim();
@@ -413,7 +409,6 @@
             }
         }
 
-        // Enter-ზე დაჭერით ხელით კოდის დამატება
         document.getElementById('manualCode').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 addManualCode();
@@ -484,13 +479,15 @@
             statusMsg.textContent = '⏳ იგზავნება...';
             statusMsg.className = 'status-msg';
 
+            // სკანირება გავაჩეროთ (არა კამერა)
+            scanningActive = false;
+
             const payload = {
                 op: opType || '',
                 bid: buyerId || '0',
                 items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
             };
 
-            // Cloudflare Worker-ზე გაგზავნა → deep link-ით ბოტში გადასვლა
             const doSend = () => {
                 fetch(WORKER_URL + '/scan', {
                     method: 'POST',
@@ -504,13 +501,21 @@
                 .then(result => {
                     if (result.key) {
                         const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
-                        // Mini App — ლინკის ჩვენება
                         statusMsg.innerHTML = '✅ მონაცემები შენახულია!<br><br>' +
                             '<a href="' + deepLink + '" style="display:inline-block;padding:14px 28px;' +
                             'background:#0088cc;color:#fff;border-radius:12px;text-decoration:none;' +
                             'font-size:16px;font-weight:600;">📨 გაგზავნა ბოტში</a><br><br>' +
                             '<span style="font-size:12px;color:#aaa;">დააჭირე ღილაკს ბოტში გადასასვლელად</span>';
                         statusMsg.className = 'status-msg';
+                        // კამერა გავაჩეროთ გაგზავნის შემდეგ
+                        if (cameraStarted) {
+                            html5Qrcode.stop().then(() => {
+                                cameraStarted = false;
+                                const scanBtn = document.getElementById('scanBtn');
+                                scanBtn.textContent = '📸 სკანირება';
+                                scanBtn.className = 'scan-btn';
+                            }).catch(() => {});
+                        }
                     } else {
                         statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
                         statusMsg.className = 'status-msg status-err';
@@ -524,18 +529,7 @@
                 });
             };
 
-            if (scannerRunning) {
-                html5Qrcode.stop().then(() => {
-                    scannerRunning = false;
-                    document.getElementById('scanBtn').textContent = '📸 სკანირება';
-                    document.getElementById('scanBtn').classList.remove('scanning');
-                    doSend();
-                }).catch(() => {
-                    doSend();
-                });
-            } else {
-                doSend();
-            }
+            doSend();
         }
 
         function escapeHtml(text) {
@@ -547,7 +541,7 @@
         // Back ღილაკი
         tg.BackButton.show();
         tg.BackButton.onClick(() => {
-            if (scannerRunning) {
+            if (cameraStarted) {
                 html5Qrcode.stop().then(() => { tg.close(); }).catch(() => { tg.close(); });
             } else {
                 tg.close();
