@@ -713,6 +713,22 @@
             document.getElementById('confidenceBar').textContent = '';
         }
 
+        function openBotLink(deepLink) {
+            // Telegram Mini App-ში deep link-ის გახსნა
+            try {
+                if (window.Telegram && window.Telegram.WebApp) {
+                    // Mini App API-ით deep link-ის გახსნა — დახურავს Mini App-ს და გახსნის ბოტის ჩატს
+                    window.Telegram.WebApp.openTelegramLink(deepLink);
+                } else {
+                    // fallback — ბრაუზერში გახსნა
+                    window.open(deepLink, '_blank');
+                }
+            } catch (e) {
+                // თუ openTelegramLink ვერ მუშაობს — fallback
+                window.location.href = deepLink;
+            }
+        }
+
         function sendData() {
             if (scannedItems.length === 0) return;
 
@@ -745,10 +761,11 @@
                 .then(result => {
                     if (result.key) {
                         const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
+                        // Telegram Mini App-ში openTelegramLink გამოვიყენოთ <a href>-ის ნაცვლად
                         statusMsg.innerHTML = '✅ მონაცემები შენახულია!<br><br>' +
-                            '<a href="' + deepLink + '" style="display:inline-block;padding:14px 28px;' +
-                            'background:#0088cc;color:#fff;border-radius:12px;text-decoration:none;' +
-                            'font-size:16px;font-weight:600;">📨 გაგზავნა ბოტში</a><br><br>' +
+                            '<button onclick="openBotLink(\'' + deepLink + '\')" style="display:inline-block;padding:14px 28px;' +
+                            'background:#0088cc;color:#fff;border-radius:12px;border:none;cursor:pointer;' +
+                            'font-size:16px;font-weight:600;">📨 გაგზავნა ბოტში</button><br><br>' +
                             '<span style="font-size:12px;color:#aaa;">დააჭირე ღილაკს ბოტში გადასასვლელად</span>';
                         statusMsg.className = 'status-msg';
                         // კამერა გავაჩეროთ გაგზავნის შემდეგ
