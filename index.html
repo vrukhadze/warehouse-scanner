@@ -306,8 +306,20 @@
         }
         if (!opType) {
             const urlParams = new URLSearchParams(window.location.search);
-            opType = urlParams.get('op') || '';
-            buyerId = urlParams.get('bid') || '0';
+            // web_app= ღილაკით URL-ში ?startapp=SALE_235 ფორმატით მოდის
+            const urlStartApp = urlParams.get('startapp') || '';
+            if (urlStartApp) {
+                const idx2 = urlStartApp.indexOf('_');
+                if (idx2 > 0) {
+                    opType = urlStartApp.substring(0, idx2);
+                    buyerId = urlStartApp.substring(idx2 + 1) || '0';
+                } else {
+                    opType = urlStartApp;
+                }
+            } else {
+                opType = urlParams.get('op') || '';
+                buyerId = urlParams.get('bid') || '0';
+            }
         }
 
         const headerEl = document.getElementById('headerText');
