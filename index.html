@@ -753,6 +753,7 @@
             // სკანირება გავაჩეროთ
             scanningActive = false;
             scanBuffer = [];
+            stopAllCameras();
 
             const payload = {
                 op: opType || '',
@@ -760,42 +761,66 @@
                 items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
             };
 
-            const doSend = () => {
-                fetch(WORKER_URL + '/scan', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                })
-                .then(r => {
-                    if (!r.ok) throw new Error('HTTP ' + r.status);
-                    return r.json();
-                })
-                .then(result => {
-                    if (result.key) {
-                        const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
-                        // Telegram Mini App-ში openTelegramLink გამოვიყენოთ <a href>-ის ნაცვლად
+            // --- მეთოდი 1: პირდაპირ Telegram.WebApp.sendData (ყველაზე საიმედო) ---
+            // sendData() იხურავს WebApp-ს ავტომატურად და ბოტს აგზავნის მონაცემებს
+            // ლიმიტი: 4096 ბაიტი — თუ payload ეტევა, ეს ყველაზე კარგი გზაა
+            const directPayload = JSON.stringify(payload);
+            if (directPayload.length <= 4000 && window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.sendData) {
+                try {
+                    window.Telegram.WebApp.sendData(directPayload);
+                    // sendData() ავტომატურად ხურავს WebApp-ს — აქ კოდი არ შესრულდება
+                    return;
+                } catch(e) {
+                    // fallback — Worker relay-ით
+                    console.log('sendData direct failed, using worker relay:', e);
+                }
+            }
+
+            // --- მეთოდი 2: Worker relay + deep link (დიდი payload-ისთვის) ---
+            fetch(WORKER_URL + '/scan', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(result => {
+                if (result.key) {
+                    const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
+                    // ავტომატურად გავხსნათ deep link და დავხუროთ WebApp
+                    try {
+                        if (window.Telegram && window.Telegram.WebApp) {
+                            window.Telegram.WebApp.openTelegramLink(deepLink);
+                            // openTelegramLink-ის შემდეგ Mini App იხურება
+                            // მაგრამ ზოგ ვერსიაზე არ იხურება — ხელით დავხუროთ
+                            setTimeout(() => {
+                                try { window.Telegram.WebApp.close(); } catch(e2) {}
+                            }, 500);
+                        } else {
+                            window.location.href = deepLink;
+                        }
+                    } catch (e) {
+                        // openTelegramLink ვერ იმუშავა — ვაჩვენოთ ღილაკი
                         statusMsg.innerHTML = '✅ მონაცემები შენახულია!<br><br>' +
                             '<button onclick="openBotLink(\'' + deepLink + '\')" style="display:inline-block;padding:14px 28px;' +
                             'background:#0088cc;color:#fff;border-radius:12px;border:none;cursor:pointer;' +
                             'font-size:16px;font-weight:600;">📨 გაგზავნა ბოტში</button><br><br>' +
                             '<span style="font-size:12px;color:#aaa;">დააჭირე ღილაკს ბოტში გადასასვლელად</span>';
                         statusMsg.className = 'status-msg';
-                        // კამერა გავაჩეროთ გაგზავნის შემდეგ
-                        stopAllCameras();
-                    } else {
-                        statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
-                        statusMsg.className = 'status-msg status-err';
-                        sendBtn.disabled = false;
                     }
-                })
-                .catch(err => {
-                    statusMsg.textContent = '❌ კავშირი ვერ მოხერხდა: ' + err.message;
+                } else {
+                    statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
                     statusMsg.className = 'status-msg status-err';
                     sendBtn.disabled = false;
-                });
-            };
-
-            doSend();
+                }
+            })
+            .catch(err => {
+                statusMsg.textContent = '❌ კავშირი ვერ მოხერხდა: ' + err.message;
+                statusMsg.className = 'status-msg status-err';
+                sendBtn.disabled = false;
+            });
         }
 
         function stopAllCameras() {
