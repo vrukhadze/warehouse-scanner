@@ -761,53 +761,48 @@
                 items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
             };
 
-            // --- მეთოდი 1: პირდაპირ Telegram.WebApp.sendData (ყველაზე საიმედო) ---
-            // sendData() იხურავს WebApp-ს ავტომატურად და ბოტს აგზავნის მონაცემებს
-            // ლიმიტი: 4096 ბაიტი — თუ payload ეტევა, ეს ყველაზე კარგი გზაა
-            const directPayload = JSON.stringify(payload);
-            if (directPayload.length <= 4000 && window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.sendData) {
-                try {
-                    window.Telegram.WebApp.sendData(directPayload);
-                    // sendData() ავტომატურად ხურავს WebApp-ს — აქ კოდი არ შესრულდება
-                    return;
-                } catch(e) {
-                    // fallback — Worker relay-ით
-                    console.log('sendData direct failed, using worker relay:', e);
-                }
-            }
+            // Worker relay → deep link → ბოტში გადასვლა
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-            // --- მეთოდი 2: Worker relay + deep link (დიდი payload-ისთვის) ---
             fetch(WORKER_URL + '/scan', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: controller.signal
             })
             .then(r => {
+                clearTimeout(timeoutId);
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return r.json();
             })
             .then(result => {
                 if (result.key) {
                     const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
-                    // ავტომატურად გავხსნათ deep link და დავხუროთ WebApp
+                    statusMsg.textContent = '✅ მონაცემები შენახულია!';
+
+                    // ცდა 1: openTelegramLink — იხურავს Mini App-ს და გახსნის ბოტს
+                    let opened = false;
                     try {
-                        if (window.Telegram && window.Telegram.WebApp) {
+                        if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.openTelegramLink) {
                             window.Telegram.WebApp.openTelegramLink(deepLink);
-                            // openTelegramLink-ის შემდეგ Mini App იხურება
-                            // მაგრამ ზოგ ვერსიაზე არ იხურება — ხელით დავხუროთ
+                            opened = true;
+                            // ზოგ ვერსიაზე Mini App არ იხურება — ხელით დავხუროთ
                             setTimeout(() => {
                                 try { window.Telegram.WebApp.close(); } catch(e2) {}
-                            }, 500);
-                        } else {
-                            window.location.href = deepLink;
+                            }, 800);
                         }
-                    } catch (e) {
-                        // openTelegramLink ვერ იმუშავა — ვაჩვენოთ ღილაკი
-                        statusMsg.innerHTML = '✅ მონაცემები შენახულია!<br><br>' +
-                            '<button onclick="openBotLink(\'' + deepLink + '\')" style="display:inline-block;padding:14px 28px;' +
-                            'background:#0088cc;color:#fff;border-radius:12px;border:none;cursor:pointer;' +
-                            'font-size:16px;font-weight:600;">📨 გაგზავნა ბოტში</button><br><br>' +
-                            '<span style="font-size:12px;color:#aaa;">დააჭირე ღილაკს ბოტში გადასასვლელად</span>';
+                    } catch(e) {
+                        console.log('openTelegramLink failed:', e);
+                    }
+
+                    // თუ openTelegramLink ვერ გახსნა — ვაჩვენოთ ღილაკი
+                    if (!opened) {
+                        statusMsg.innerHTML = '✅ შენახულია!<br><br>' +
+                            '<a href="' + deepLink + '" style="display:inline-block;padding:16px 32px;' +
+                            'background:#0088cc;color:#fff;border-radius:12px;text-decoration:none;' +
+                            'font-size:17px;font-weight:700;">📨 გახსენი ბოტში</a><br><br>' +
+                            '<span style="font-size:12px;color:#aaa;">დააჭირე ბოტში გადასასვლელად</span>';
                         statusMsg.className = 'status-msg';
                     }
                 } else {
@@ -817,7 +812,9 @@
                 }
             })
             .catch(err => {
-                statusMsg.textContent = '❌ კავშირი ვერ მოხერხდა: ' + err.message;
+                clearTimeout(timeoutId);
+                const errMsg = err.name === 'AbortError' ? 'ტაიმაუტი — სცადე ხელახლა' : err.message;
+                statusMsg.textContent = '❌ კავშირი: ' + errMsg;
                 statusMsg.className = 'status-msg status-err';
                 sendBtn.disabled = false;
             });
