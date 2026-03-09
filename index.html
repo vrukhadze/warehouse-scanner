@@ -644,11 +644,14 @@
             const code = cleanCode(rawCode);
             if (!code) return;
 
-            const existing = scannedItems.find(item => item.code === code);
-            if (existing) {
-                existing.qty++;
+            const existingIdx = scannedItems.findIndex(item => item.code === code);
+            if (existingIdx !== -1) {
+                // რაოდენობა გაზარდე და სიის თავში გადაიტანე
+                scannedItems[existingIdx].qty++;
+                const item = scannedItems.splice(existingIdx, 1)[0];
+                scannedItems.unshift(item);
             } else {
-                scannedItems.push({ code: code, qty: 1 });
+                scannedItems.unshift({ code: code, qty: 1 });
             }
             renderList();
         }
