@@ -98,6 +98,23 @@
         }
         .scan-btn:active { opacity: 0.7; }
         .scan-btn:disabled { opacity: 0.4; }
+        .torch-btn {
+            padding: 14px 18px;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            cursor: pointer;
+            background: var(--tg-theme-secondary-bg-color, #16213e);
+            color: var(--tg-theme-text-color, #eee);
+            border: 1px solid var(--tg-theme-hint-color, #555);
+            display: none;
+        }
+        .torch-btn.active {
+            background: #f39c12;
+            color: #000;
+            border-color: #f39c12;
+        }
+        .torch-btn:active { opacity: 0.7; }
         .scan-list {
             flex: 1;
             padding: 8px 16px;
@@ -265,6 +282,7 @@
     <div class="engine-badge" id="engineBadge"></div>
     <div class="scan-controls">
         <button class="scan-btn" id="scanBtn" onclick="toggleScanner()">📸 სკანირება</button>
+        <button class="torch-btn" id="torchBtn" onclick="toggleTorch()">🔦</button>
     </div>
     <!-- ხელით შეყვანის ველი -->
     <div class="manual-input-bar">
@@ -391,6 +409,11 @@
         let nativeStream = null;
         let nativeAnimFrame = null;
         let html5Qrcode = null;
+        let torchOn = false;
+        let torchSupported = false;
+        let darkFrameCount = 0;          // auto-torch: ბნელი ფრეიმების მთვლელი
+        let autoTorchTriggered = false;   // auto-torch: უკვე ჩაირთო?
+        let h5EnhanceInterval = null;     // html5-qrcode enhanced scan loop
 
         if (useNative) {
             document.getElementById('engineBadge').textContent = '⚡ Native BarcodeDetector';
@@ -430,19 +453,24 @@
                               'upc_a', 'upc_e', 'itf', 'qr_code', 'data_matrix']
                 });
 
-                // კამერის გახსნა მაღალი რეზოლუციით
+                // კამერის გახსნა მაღალი რეზოლუციით + torch მხარდაჭერა
                 nativeStream = await navigator.mediaDevices.getUserMedia({
                     video: {
                         facingMode: 'environment',
                         width: { ideal: 1920 },
                         height: { ideal: 1080 },
-                        focusMode: { ideal: 'continuous' }
+                        focusMode: { ideal: 'continuous' },
+                        exposureMode: { ideal: 'continuous' },
+                        whiteBalanceMode: { ideal: 'continuous' }
                     }
                 });
 
                 const video = document.getElementById('nativeVideo');
                 video.srcObject = nativeStream;
                 await video.play();
+
+                // Torch მხარდაჭერის შემოწმება
+                checkTorchSupport(nativeStream);
 
                 document.getElementById('nativeCamera').style.display = 'block';
                 document.getElementById('reader').style.display = 'none';
@@ -477,21 +505,157 @@
 
             if (scanningActive && nativeBarcodeDetector) {
                 try {
-                    const barcodes = await nativeBarcodeDetector.detect(video);
+                    // 1. პირდაპირ ვიდეოდან
+                    let barcodes = await nativeBarcodeDetector.detect(video);
+
+                    // 2. Brightness/contrast enhancement
+                    if (barcodes.length === 0) {
+                        const bright = enhanceFrame(video, 'brighten');
+                        if (bright) barcodes = await nativeBarcodeDetector.detect(bright);
+                    }
+
+                    // 3. Grayscale + binarization (შავ-თეთრი)
+                    if (barcodes.length === 0) {
+                        const bin = enhanceFrame(video, 'binarize');
+                        if (bin) barcodes = await nativeBarcodeDetector.detect(bin);
+                    }
+
+                    // 4. Sharpen (ხაზების გამოკვეთა)
+                    if (barcodes.length === 0) {
+                        const sharp = enhanceFrame(video, 'sharpen');
+                        if (sharp) barcodes = await nativeBarcodeDetector.detect(sharp);
+                    }
+
                     for (const barcode of barcodes) {
                         if (barcode.rawValue) {
                             handleRawScan(barcode.rawValue);
                         }
                     }
                 } catch (err) {
-                    // იგნორი — ფრეიმის დამუშავების შეცდომა
+                    // იგნორი
                 }
             }
 
-            // ყოველ ~100ms ახალი ფრეიმის სკანირება
             setTimeout(() => {
                 nativeAnimFrame = requestAnimationFrame(nativeScanLoop);
             }, 80);
+        }
+
+        // ===== Image Enhancement Strategies =====
+
+        // საშუალო სიკაშკაშის გამოთვლა
+        function getAvgBrightness(data) {
+            let total = 0, samples = 0;
+            for (let i = 0; i < data.length; i += 80) {
+                total += (data[i] + data[i+1] + data[i+2]) / 3;
+                samples++;
+            }
+            const avg = total / samples;
+
+            // Auto-torch: თუ ზედიზედ 15 ფრეიმი ბნელია — ფანარი ავტომატურად ჩაირთოს
+            if (avg < 70) {
+                darkFrameCount++;
+                if (darkFrameCount >= 15 && torchSupported && !torchOn && !autoTorchTriggered) {
+                    autoTorchTriggered = true;
+                    toggleTorch();
+                }
+            } else {
+                darkFrameCount = Math.max(0, darkFrameCount - 1);
+            }
+
+            return avg;
+        }
+
+        // ფრეიმის canvas-ზე გადატანა
+        function captureToCanvas(video) {
+            const canvas = document.getElementById('nativeCanvas');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            const w = video.videoWidth;
+            const h = video.videoHeight;
+            if (!w || !h) return null;
+            canvas.width = w;
+            canvas.height = h;
+            ctx.drawImage(video, 0, 0, w, h);
+            return { canvas, ctx, w, h };
+        }
+
+        function enhanceFrame(video, mode) {
+            try {
+                const cap = captureToCanvas(video);
+                if (!cap) return null;
+                const { canvas, ctx, w, h } = cap;
+                const imageData = ctx.getImageData(0, 0, w, h);
+                const data = imageData.data;
+                const avgBright = getAvgBrightness(data);
+
+                if (mode === 'brighten') {
+                    // ნათელისთვის არ სჭირდება
+                    if (avgBright > 120) return null;
+                    const boost = Math.min(80, Math.max(20, 150 - avgBright));
+                    const contrast = avgBright < 60 ? 2.0 : 1.5;
+                    const mid = 128;
+                    for (let i = 0; i < data.length; i += 4) {
+                        for (let c = 0; c < 3; c++) {
+                            let v = data[i + c];
+                            v = (v - mid) * contrast + mid + boost;
+                            data[i + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+                        }
+                    }
+                } else if (mode === 'binarize') {
+                    // Grayscale → Otsu-ს მსგავსი ადაპტური threshold
+                    // ჯერ grayscale
+                    for (let i = 0; i < data.length; i += 4) {
+                        const gray = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+                        data[i] = data[i+1] = data[i+2] = gray;
+                    }
+                    // Histogram-ით threshold-ის გამოთვლა (Otsu)
+                    const hist = new Uint32Array(256);
+                    for (let i = 0; i < data.length; i += 4) hist[data[i]]++;
+                    const totalPx = data.length / 4;
+                    let sumAll = 0;
+                    for (let t = 0; t < 256; t++) sumAll += t * hist[t];
+                    let sumB = 0, wB = 0, maxVar = 0, threshold = 128;
+                    for (let t = 0; t < 256; t++) {
+                        wB += hist[t];
+                        if (wB === 0) continue;
+                        const wF = totalPx - wB;
+                        if (wF === 0) break;
+                        sumB += t * hist[t];
+                        const mB = sumB / wB;
+                        const mF = (sumAll - sumB) / wF;
+                        const between = wB * wF * (mB - mF) * (mB - mF);
+                        if (between > maxVar) { maxVar = between; threshold = t; }
+                    }
+                    // Binarize
+                    for (let i = 0; i < data.length; i += 4) {
+                        const v = data[i] > threshold ? 255 : 0;
+                        data[i] = data[i+1] = data[i+2] = v;
+                    }
+                } else if (mode === 'sharpen') {
+                    // Unsharp mask: sharpen kernel convolution
+                    if (avgBright > 150) return null; // ნათელი სურათი — არ სჭირდება
+                    const src = new Uint8ClampedArray(data);
+                    // kernel: 0 -1 0 / -1 5 -1 / 0 -1 0
+                    for (let y = 1; y < h - 1; y++) {
+                        for (let x = 1; x < w - 1; x++) {
+                            const idx = (y * w + x) * 4;
+                            for (let c = 0; c < 3; c++) {
+                                const v = 5 * src[idx + c]
+                                    - src[((y-1)*w + x)*4 + c]
+                                    - src[((y+1)*w + x)*4 + c]
+                                    - src[(y*w + x-1)*4 + c]
+                                    - src[(y*w + x+1)*4 + c];
+                                data[idx + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+                            }
+                        }
+                    }
+                }
+
+                ctx.putImageData(imageData, 0, 0);
+                return canvas;
+            } catch (e) {
+                return null;
+            }
         }
 
         function stopNativeCamera() {
@@ -508,6 +672,53 @@
             document.getElementById('nativeCamera').style.display = 'none';
             cameraStarted = false;
             scanningActive = false;
+            torchOn = false;
+            torchSupported = false;
+            darkFrameCount = 0;
+            autoTorchTriggered = false;
+            document.getElementById('torchBtn').style.display = 'none';
+            document.getElementById('torchBtn').classList.remove('active');
+        }
+
+        // ===== Torch (ფანარი) =====
+        function checkTorchSupport(stream) {
+            try {
+                const track = stream.getVideoTracks()[0];
+                if (!track) return;
+                const caps = track.getCapabilities ? track.getCapabilities() : {};
+                if (caps.torch) {
+                    torchSupported = true;
+                    document.getElementById('torchBtn').style.display = 'block';
+                }
+            } catch (e) {
+                torchSupported = false;
+            }
+        }
+
+        async function toggleTorch() {
+            if (!torchSupported) return;
+            const stream = nativeStream || (html5Qrcode && html5Qrcode.getRunningTrackSettings ? getHtml5Stream() : null);
+            if (!stream) return;
+            try {
+                const track = stream.getVideoTracks()[0];
+                if (!track) return;
+                torchOn = !torchOn;
+                await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+                const btn = document.getElementById('torchBtn');
+                btn.classList.toggle('active', torchOn);
+                btn.textContent = torchOn ? '🔦' : '🔦';
+            } catch (e) {
+                console.log('Torch error:', e);
+            }
+        }
+
+        function getHtml5Stream() {
+            // html5-qrcode ვიდეო ელემენტიდან stream-ის ამოღება
+            try {
+                const videoEl = document.querySelector('#reader video');
+                if (videoEl && videoEl.srcObject) return videoEl.srcObject;
+            } catch(e) {}
+            return null;
         }
 
         // ===== html5-qrcode fallback =====
@@ -530,6 +741,11 @@
                 scanBtn.disabled = false;
                 scanBtn.textContent = '⏸ პაუზა';
                 scanBtn.className = 'scan-btn scanning';
+                // Torch მხარდაჭერის შემოწმება html5-qrcode-სთვის
+                const h5stream = getHtml5Stream();
+                if (h5stream) checkTorchSupport(h5stream);
+                // Enhanced scan loop — canvas + binarize
+                startH5EnhancedScan();
             }).catch(err => {
                 scanBtn.disabled = false;
                 scanBtn.textContent = '📸 სკანირება';
@@ -544,6 +760,70 @@
         function onHtml5ScanSuccess(decodedText, decodedResult) {
             if (!scanningActive) return;
             handleRawScan(decodedText);
+        }
+
+        // ===== html5-qrcode enhanced scan — ყოველ 500ms canvas-based enhancement =====
+        function startH5EnhancedScan() {
+            if (h5EnhanceInterval) return;
+            h5EnhanceInterval = setInterval(async () => {
+                if (!scanningActive || !cameraStarted) return;
+                try {
+                    const videoEl = document.querySelector('#reader video');
+                    if (!videoEl || videoEl.readyState < 2) return;
+
+                    // Auto-torch ლოგიკა html5-qrcode-სთვისაც
+                    const tmpCanvas = document.createElement('canvas');
+                    const tmpCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
+                    const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+                    if (!vw || !vh) return;
+                    tmpCanvas.width = vw;
+                    tmpCanvas.height = vh;
+                    tmpCtx.drawImage(videoEl, 0, 0, vw, vh);
+                    const tmpData = tmpCtx.getImageData(0, 0, vw, vh).data;
+                    getAvgBrightness(tmpData);
+
+                    // Enhanced frame → html5Qrcode.scanFile
+                    // Binarized version — ყველაზე ეფექტურია ბარკოდისთვის
+                    const enhCanvas = document.createElement('canvas');
+                    enhCanvas.width = vw;
+                    enhCanvas.height = vh;
+                    const enhCtx = enhCanvas.getContext('2d', { willReadFrequently: true });
+                    enhCtx.drawImage(videoEl, 0, 0, vw, vh);
+                    const imgData = enhCtx.getImageData(0, 0, vw, vh);
+                    const d = imgData.data;
+
+                    // Brightness boost + binarize combo
+                    for (let i = 0; i < d.length; i += 4) {
+                        let gray = d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114;
+                        gray = Math.min(255, gray * 1.4 + 30); // boost
+                        d[i] = d[i+1] = d[i+2] = gray > 140 ? 255 : 0;
+                    }
+                    enhCtx.putImageData(imgData, 0, 0);
+
+                    // Canvas → Blob → scan
+                    enhCanvas.toBlob(async (blob) => {
+                        if (!blob || !scanningActive) return;
+                        try {
+                            const file = new File([blob], 'frame.png', { type: 'image/png' });
+                            const result = await html5Qrcode.scanFileV2(file, false);
+                            if (result && result.decodedText) {
+                                handleRawScan(result.decodedText);
+                            }
+                        } catch (e) {
+                            // სკანირება ვერ მოხერხდა — ნორმალური
+                        }
+                    }, 'image/png');
+                } catch (e) {
+                    // იგნორი
+                }
+            }, 500);
+        }
+
+        function stopH5EnhancedScan() {
+            if (h5EnhanceInterval) {
+                clearInterval(h5EnhanceInterval);
+                h5EnhanceInterval = null;
+            }
         }
 
         // ===== საერთო სკანირების ლოგიკა (ორივე engine-სთვის) =====
@@ -601,6 +881,7 @@
         function pauseScanning() {
             scanningActive = false;
             scanBuffer = [];
+            stopH5EnhancedScan();
             document.getElementById('confidenceBar').textContent = '';
             const overlay = document.getElementById('scanOverlay');
             if (overlay) overlay.classList.remove('detecting');
@@ -618,6 +899,8 @@
             const scanBtn = document.getElementById('scanBtn');
             scanBtn.textContent = '⏸ პაუზა';
             scanBtn.className = 'scan-btn scanning';
+            // html5-qrcode-ის enhanced scan-ის გაგრძელება
+            if (!useNative && cameraStarted) startH5EnhancedScan();
         }
 
         // კოდის გაწმენდა
@@ -824,6 +1107,7 @@
         }
 
         function stopAllCameras() {
+            stopH5EnhancedScan();
             if (useNative) {
                 stopNativeCamera();
             } else if (html5Qrcode && cameraStarted) {
@@ -837,6 +1121,12 @@
             const scanBtn = document.getElementById('scanBtn');
             scanBtn.textContent = '📸 სკანირება';
             scanBtn.className = 'scan-btn';
+            torchOn = false;
+            torchSupported = false;
+            darkFrameCount = 0;
+            autoTorchTriggered = false;
+            document.getElementById('torchBtn').style.display = 'none';
+            document.getElementById('torchBtn').classList.remove('active');
         }
 
         function escapeHtml(text) {
