@@ -526,6 +526,18 @@
                         if (sharp) barcodes = await nativeBarcodeDetector.detect(sharp);
                     }
 
+                    // 5. Darken — ფანარით გადანათებული სურათის კომპენსაცია
+                    if (barcodes.length === 0) {
+                        const dark = enhanceFrame(video, 'darken');
+                        if (dark) barcodes = await nativeBarcodeDetector.detect(dark);
+                    }
+
+                    // 6. Center crop 2x + upscale — პატარა ბარკოდები
+                    if (barcodes.length === 0) {
+                        const cropped = cropCenter(video, 2);
+                        if (cropped) barcodes = await nativeBarcodeDetector.detect(cropped);
+                    }
+
                     for (const barcode of barcodes) {
                         if (barcode.rawValue) {
                             handleRawScan(barcode.rawValue);
@@ -579,6 +591,23 @@
             return { canvas, ctx, w, h };
         }
 
+        // ცენტრიდან crop + upscale — პატარა ბარკოდების წასაკითხად
+        function cropCenter(video, scale) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            if (!vw || !vh) return null;
+            const cw = Math.floor(vw / scale);
+            const ch = Math.floor(vh / scale);
+            const sx = Math.floor((vw - cw) / 2);
+            const sy = Math.floor((vh - ch) / 2);
+            canvas.width = vw;
+            canvas.height = vh;
+            ctx.drawImage(video, sx, sy, cw, ch, 0, 0, vw, vh);
+            return canvas;
+        }
+
         function enhanceFrame(video, mode) {
             try {
                 const cap = captureToCanvas(video);
@@ -589,7 +618,6 @@
                 const avgBright = getAvgBrightness(data);
 
                 if (mode === 'brighten') {
-                    // ნათელისთვის არ სჭირდება
                     if (avgBright > 120) return null;
                     const boost = Math.min(80, Math.max(20, 150 - avgBright));
                     const contrast = avgBright < 60 ? 2.0 : 1.5;
@@ -598,6 +626,19 @@
                         for (let c = 0; c < 3; c++) {
                             let v = data[i + c];
                             v = (v - mid) * contrast + mid + boost;
+                            data[i + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+                        }
+                    }
+                } else if (mode === 'darken') {
+                    // ფანარით ზედმეტი სიკაშკაშის კომპენსაცია
+                    if (avgBright < 180) return null;
+                    const contrast = 2.0;
+                    const mid = 128;
+                    const dim = Math.min(60, avgBright - 150);
+                    for (let i = 0; i < data.length; i += 4) {
+                        for (let c = 0; c < 3; c++) {
+                            let v = data[i + c];
+                            v = (v - mid) * contrast + mid - dim;
                             data[i + c] = v < 0 ? 0 : v > 255 ? 255 : v;
                         }
                     }
