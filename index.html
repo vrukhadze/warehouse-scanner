@@ -557,6 +557,18 @@
                         if (sharp) barcodes = await nativeBarcodeDetector.detect(sharp);
                     }
 
+                    // 5. Center crop 2x — iPhone-ზე ფოკუსის პრობლემის გვერდის ავლა
+                    if (barcodes.length === 0) {
+                        const cropped = cropCenter(video, 2);
+                        if (cropped) barcodes = await nativeBarcodeDetector.detect(cropped);
+                    }
+
+                    // 6. Center crop 3x
+                    if (barcodes.length === 0) {
+                        const cropped3 = cropCenter(video, 3);
+                        if (cropped3) barcodes = await nativeBarcodeDetector.detect(cropped3);
+                    }
+
                     for (const barcode of barcodes) {
                         if (barcode.rawValue) {
                             handleRawScan(barcode.rawValue);
@@ -608,6 +620,23 @@
             canvas.height = h;
             ctx.drawImage(video, 0, 0, w, h);
             return { canvas, ctx, w, h };
+        }
+
+        // ცენტრიდან crop — ციფრული zoom (iPhone-ზე ფოკუსის პრობლემის გვერდის ავლა)
+        function cropCenter(video, scale) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            if (!vw || !vh) return null;
+            const cw = Math.floor(vw / scale);
+            const ch = Math.floor(vh / scale);
+            const sx = Math.floor((vw - cw) / 2);
+            const sy = Math.floor((vh - ch) / 2);
+            canvas.width = cw;
+            canvas.height = ch;
+            ctx.drawImage(video, sx, sy, cw, ch, 0, 0, cw, ch);
+            return canvas;
         }
 
         function enhanceFrame(video, mode) {
@@ -841,10 +870,26 @@
                             const result = await html5Qrcode.scanFileV2(file, false);
                             if (result && result.decodedText) {
                                 handleRawScan(result.decodedText);
+                                return;
                             }
-                        } catch (e) {
-                            // სკანირება ვერ მოხერხდა — ნორმალური
-                        }
+                        } catch (e) {}
+
+                        // Center crop 2x — iPhone-ზე ფოკუსის პრობლემის გვერდის ავლა
+                        try {
+                            const cropped = cropCenter(videoEl, 2);
+                            if (cropped) {
+                                cropped.toBlob(async (cropBlob) => {
+                                    if (!cropBlob || !scanningActive) return;
+                                    try {
+                                        const cropFile = new File([cropBlob], 'crop.png', { type: 'image/png' });
+                                        const cropResult = await html5Qrcode.scanFileV2(cropFile, false);
+                                        if (cropResult && cropResult.decodedText) {
+                                            handleRawScan(cropResult.decodedText);
+                                        }
+                                    } catch(e2) {}
+                                }, 'image/png');
+                            }
+                        } catch(e3) {}
                     }, 'image/png');
                 } catch (e) {
                     // იგნორი
