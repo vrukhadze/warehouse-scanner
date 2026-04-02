@@ -469,6 +469,16 @@
                 video.srcObject = nativeStream;
                 await video.play();
 
+                // Zoom — პატარა ბარკოდების წასაკითხად (მუშაობს iPhone SE-ზე)
+                try {
+                    const zoomTrack = nativeStream.getVideoTracks()[0];
+                    const caps = zoomTrack.getCapabilities ? zoomTrack.getCapabilities() : {};
+                    if (caps.zoom) {
+                        const targetZoom = Math.min(2.0, caps.zoom.max);
+                        await zoomTrack.applyConstraints({ advanced: [{ zoom: targetZoom }] });
+                    }
+                } catch(e) { /* zoom not supported — OK */ }
+
                 // Torch მხარდაჭერის შემოწმება
                 checkTorchSupport(nativeStream);
 
@@ -784,7 +794,14 @@
                 scanBtn.className = 'scan-btn scanning';
                 // Torch მხარდაჭერის შემოწმება html5-qrcode-სთვის
                 const h5stream = getHtml5Stream();
-                if (h5stream) checkTorchSupport(h5stream);
+                if (h5stream) {
+                    checkTorchSupport(h5stream);
+                    try {
+                        const zt = h5stream.getVideoTracks()[0];
+                        const zc = zt.getCapabilities ? zt.getCapabilities() : {};
+                        if (zc.zoom) zt.applyConstraints({ advanced: [{ zoom: Math.min(2.0, zc.zoom.max) }] });
+                    } catch(e) {}
+                }
                 // Enhanced scan loop — canvas + binarize
                 startH5EnhancedScan();
             }).catch(err => {
