@@ -359,8 +359,8 @@
 
         // ===== Multi-scan consensus =====
         // რამდენიმე ფრეიმის სკანირება და ყველაზე ხშირი შედეგის არჩევა
-        const CONSENSUS_THRESHOLD = 3;  // მინ. 3-ჯერ ერთი და იგივე კოდი
-        const CONSENSUS_WINDOW = 2000;  // 2 წამის ფანჯარა
+        const CONSENSUS_THRESHOLD = 2;  // მინ. 2-ჯერ ერთი და იგივე კოდი
+        const CONSENSUS_WINDOW = 1500;  // 1.5 წამის ფანჯარა
         let scanBuffer = [];  // [{code, time}, ...]
 
         function addToBuffer(code) {
