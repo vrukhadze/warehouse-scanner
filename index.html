@@ -504,6 +504,10 @@
             }
         }
 
+        // Enhancement სტრატეგიები — ყოველ frame-ზე მხოლოდ 1 ეშვება, როტაციით
+        let _scanStrategy = 0;
+        const _STRATEGIES = ['raw', 'binarize', 'crop', 'brighten', 'sharpen', 'darken'];
+
         async function nativeScanLoop() {
             if (!cameraStarted) return;
 
@@ -515,37 +519,20 @@
 
             if (scanningActive && nativeBarcodeDetector) {
                 try {
-                    // 1. პირდაპირ ვიდეოდან
+                    // ყოველთვის ჯერ პირდაპირ ვიდეოდან
                     let barcodes = await nativeBarcodeDetector.detect(video);
 
-                    // 2. Brightness/contrast enhancement
+                    // თუ ვერ წაიკითხა — მიმდინარე სტრატეგიით ცდა
                     if (barcodes.length === 0) {
-                        const bright = enhanceFrame(video, 'brighten');
-                        if (bright) barcodes = await nativeBarcodeDetector.detect(bright);
-                    }
-
-                    // 3. Grayscale + binarization (შავ-თეთრი)
-                    if (barcodes.length === 0) {
-                        const bin = enhanceFrame(video, 'binarize');
-                        if (bin) barcodes = await nativeBarcodeDetector.detect(bin);
-                    }
-
-                    // 4. Sharpen (ხაზების გამოკვეთა)
-                    if (barcodes.length === 0) {
-                        const sharp = enhanceFrame(video, 'sharpen');
-                        if (sharp) barcodes = await nativeBarcodeDetector.detect(sharp);
-                    }
-
-                    // 5. Darken — ფანარით გადანათებული სურათის კომპენსაცია
-                    if (barcodes.length === 0) {
-                        const dark = enhanceFrame(video, 'darken');
-                        if (dark) barcodes = await nativeBarcodeDetector.detect(dark);
-                    }
-
-                    // 6. Center crop 2x + upscale — პატარა ბარკოდები
-                    if (barcodes.length === 0) {
-                        const cropped = cropCenter(video, 2);
-                        if (cropped) barcodes = await nativeBarcodeDetector.detect(cropped);
+                        const strategy = _STRATEGIES[_scanStrategy % _STRATEGIES.length];
+                        _scanStrategy++;
+                        let enhanced = null;
+                        if (strategy === 'crop') {
+                            enhanced = cropCenter(video, 2);
+                        } else if (strategy !== 'raw') {
+                            enhanced = enhanceFrame(video, strategy);
+                        }
+                        if (enhanced) barcodes = await nativeBarcodeDetector.detect(enhanced);
                     }
 
                     for (const barcode of barcodes) {
@@ -558,9 +545,7 @@
                 }
             }
 
-            setTimeout(() => {
-                nativeAnimFrame = requestAnimationFrame(nativeScanLoop);
-            }, 40);
+            nativeAnimFrame = requestAnimationFrame(nativeScanLoop);
         }
 
         // ===== Image Enhancement Strategies =====
