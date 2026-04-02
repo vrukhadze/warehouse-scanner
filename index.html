@@ -462,7 +462,7 @@
                         focusMode: { ideal: 'continuous' },
                         exposureMode: { ideal: 'continuous' },
                         whiteBalanceMode: { ideal: 'continuous' },
-                        zoom: { ideal: 2.0 }
+                        zoom: { ideal: 5.0 }
                     }
                 });
 
@@ -476,7 +476,7 @@
                     const track = nativeStream.getVideoTracks()[0];
                     const caps = track.getCapabilities ? track.getCapabilities() : {};
                     if (caps.zoom) {
-                        const targetZoom = Math.min(2.0, caps.zoom.max);
+                        const targetZoom = Math.min(5.0, caps.zoom.max);
                         await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
                     }
                 } catch(zoomErr) { /* zoom not supported — OK */ }
@@ -762,7 +762,7 @@
                         const track = h5stream.getVideoTracks()[0];
                         const caps = track.getCapabilities ? track.getCapabilities() : {};
                         if (caps.zoom) {
-                            const targetZoom = Math.min(2.0, caps.zoom.max);
+                            const targetZoom = Math.min(5.0, caps.zoom.max);
                             track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
                         }
                     } catch(zoomErr) { /* zoom not supported — OK */ }
