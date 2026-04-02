@@ -407,6 +407,33 @@
         const useNative = ('BarcodeDetector' in window);
         let nativeBarcodeDetector = null;
         let nativeStream = null;
+
+        // iPhone-ზე სწორი back კამერის არჩევა (main 1x lens, არა ultra-wide)
+        async function getBackCameraId() {
+            try {
+                // ჯერ permission უნდა მოვითხოვოთ, სანამ label-ებს ვნახავთ
+                const tempStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                tempStream.getTracks().forEach(t => t.stop());
+
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+                // iPhone-ის back კამერები: "Back Camera", "Back Ultra Wide Camera", "Back Telephoto Camera"
+                // გვჭირდება "Back Camera" (main 1x lens) — ყველაზე მოკლე label-ით back
+                const backCams = videoDevices.filter(d =>
+                    d.label && /back/i.test(d.label) && !/ultra/i.test(d.label) && !/telephoto/i.test(d.label)
+                );
+                if (backCams.length > 0) {
+                    return backCams[0].deviceId;
+                }
+
+                // fallback: თუ label-ებში "back" არ წერია, ბოლო environment camera
+                // (iOS-ზე ჩვეულებრივ მთავარი კამერა პირველია)
+                return null;
+            } catch(e) {
+                return null;
+            }
+        }
         let nativeAnimFrame = null;
         let html5Qrcode = null;
         let torchOn = false;
@@ -453,33 +480,25 @@
                               'upc_a', 'upc_e', 'itf', 'qr_code', 'data_matrix']
                 });
 
-                // კამერის გახსნა მაღალი რეზოლუციით + torch მხარდაჭერა
-                nativeStream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 },
-                        focusMode: { ideal: 'continuous' },
-                        exposureMode: { ideal: 'continuous' },
-                        whiteBalanceMode: { ideal: 'continuous' },
-                        zoom: { ideal: 5.0 }
-                    }
-                });
+                // კამერის გახსნა — iPhone-ზე main (1x) lens-ის არჩევა
+                const backCamId = await getBackCameraId();
+                const videoConstraints = {
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 },
+                    focusMode: { ideal: 'continuous' },
+                    exposureMode: { ideal: 'continuous' },
+                    whiteBalanceMode: { ideal: 'continuous' }
+                };
+                if (backCamId) {
+                    videoConstraints.deviceId = { exact: backCamId };
+                } else {
+                    videoConstraints.facingMode = 'environment';
+                }
+                nativeStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
 
                 const video = document.getElementById('nativeVideo');
                 video.srcObject = nativeStream;
                 await video.play();
-
-                // iPhone-ზე zoom constraint ხშირად getUserMedia-ში იგნორდება —
-                // applyConstraints-ით ცალკე ვცდით
-                try {
-                    const track = nativeStream.getVideoTracks()[0];
-                    const caps = track.getCapabilities ? track.getCapabilities() : {};
-                    if (caps.zoom) {
-                        const targetZoom = Math.min(5.0, caps.zoom.max);
-                        await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
-                    }
-                } catch(zoomErr) { /* zoom not supported — OK */ }
 
                 // Torch მხარდაჭერის შემოწმება
                 checkTorchSupport(nativeStream);
@@ -734,7 +753,7 @@
         }
 
         // ===== html5-qrcode fallback =====
-        function startHtml5Camera() {
+        async function startHtml5Camera() {
             const scanBtn = document.getElementById('scanBtn');
             scanBtn.disabled = true;
             scanBtn.textContent = '⏳ კამერა იხსნება...';
@@ -742,8 +761,10 @@
             document.getElementById('nativeCamera').style.display = 'none';
             document.getElementById('reader').style.display = 'block';
 
+            const h5CamId = await getBackCameraId();
+            const h5CamConstraint = h5CamId ? { deviceId: { exact: h5CamId } } : { facingMode: "environment" };
             html5Qrcode.start(
-                { facingMode: "environment" },
+                h5CamConstraint,
                 html5Config,
                 onHtml5ScanSuccess,
                 () => {} // failure იგნორი
@@ -755,18 +776,7 @@
                 scanBtn.className = 'scan-btn scanning';
                 // Torch + Zoom მხარდაჭერის შემოწმება html5-qrcode-სთვის
                 const h5stream = getHtml5Stream();
-                if (h5stream) {
-                    checkTorchSupport(h5stream);
-                    // Zoom — iPhone-ზე ახლო ბარკოდის წასაკითხად
-                    try {
-                        const track = h5stream.getVideoTracks()[0];
-                        const caps = track.getCapabilities ? track.getCapabilities() : {};
-                        if (caps.zoom) {
-                            const targetZoom = Math.min(5.0, caps.zoom.max);
-                            track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
-                        }
-                    } catch(zoomErr) { /* zoom not supported — OK */ }
-                }
+                if (h5stream) checkTorchSupport(h5stream);
                 // Enhanced scan loop — canvas + binarize
                 startH5EnhancedScan();
             }).catch(err => {
