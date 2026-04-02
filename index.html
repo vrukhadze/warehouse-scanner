@@ -359,7 +359,7 @@
 
         // ===== Multi-scan consensus =====
         // რამდენიმე ფრეიმის სკანირება და ყველაზე ხშირი შედეგის არჩევა
-        const CONSENSUS_THRESHOLD = 2;  // მინ. 2-ჯერ ერთი და იგივე კოდი
+        const CONSENSUS_THRESHOLD = 1;  // პირველივე წაკითხვა საკმარისი
         const CONSENSUS_WINDOW = 1500;  // 1.5 წამის ფანჯარა
         let scanBuffer = [];  // [{code, time}, ...]
 
@@ -560,7 +560,7 @@
 
             setTimeout(() => {
                 nativeAnimFrame = requestAnimationFrame(nativeScanLoop);
-            }, 80);
+            }, 40);
         }
 
         // ===== Image Enhancement Strategies =====
