@@ -461,13 +461,25 @@
                         height: { ideal: 1080 },
                         focusMode: { ideal: 'continuous' },
                         exposureMode: { ideal: 'continuous' },
-                        whiteBalanceMode: { ideal: 'continuous' }
+                        whiteBalanceMode: { ideal: 'continuous' },
+                        zoom: { ideal: 2.0 }
                     }
                 });
 
                 const video = document.getElementById('nativeVideo');
                 video.srcObject = nativeStream;
                 await video.play();
+
+                // iPhone-ზე zoom constraint ხშირად getUserMedia-ში იგნორდება —
+                // applyConstraints-ით ცალკე ვცდით
+                try {
+                    const track = nativeStream.getVideoTracks()[0];
+                    const caps = track.getCapabilities ? track.getCapabilities() : {};
+                    if (caps.zoom) {
+                        const targetZoom = Math.min(2.0, caps.zoom.max);
+                        await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
+                    }
+                } catch(zoomErr) { /* zoom not supported — OK */ }
 
                 // Torch მხარდაჭერის შემოწმება
                 checkTorchSupport(nativeStream);
@@ -1047,7 +1059,18 @@
                 items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
             };
 
-            // Worker relay → deep link → ბოტში გადასვლა
+            // ცდა 1: Telegram.WebApp.sendData() — პირდაპირ ბოტში, /start არ ჩანს ჩატში
+            try {
+                if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.sendData) {
+                    window.Telegram.WebApp.sendData(JSON.stringify(payload));
+                    // sendData() ავტომატურად ხურავს Mini App-ს
+                    return;
+                }
+            } catch(e) {
+                console.log('WebApp.sendData failed, falling back to Worker:', e);
+            }
+
+            // ცდა 2 (fallback): Worker relay → deep link → ბოტში გადასვლა
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 15000);
 
@@ -1067,13 +1090,12 @@
                     const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
                     statusMsg.textContent = '✅ მონაცემები შენახულია!';
 
-                    // ცდა 1: openTelegramLink — იხურავს Mini App-ს და გახსნის ბოტს
+                    // openTelegramLink — იხურავს Mini App-ს და გახსნის ბოტს
                     let opened = false;
                     try {
                         if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.openTelegramLink) {
                             window.Telegram.WebApp.openTelegramLink(deepLink);
                             opened = true;
-                            // ზოგ ვერსიაზე Mini App არ იხურება — ხელით დავხუროთ
                             setTimeout(() => {
                                 try { window.Telegram.WebApp.close(); } catch(e2) {}
                             }, 800);
@@ -1082,7 +1104,6 @@
                         console.log('openTelegramLink failed:', e);
                     }
 
-                    // თუ openTelegramLink ვერ გახსნა — ვაჩვენოთ ღილაკი
                     if (!opened) {
                         statusMsg.innerHTML = '✅ შენახულია!<br><br>' +
                             '<a href="' + deepLink + '" style="display:inline-block;padding:16px 32px;' +
