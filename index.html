@@ -407,7 +407,6 @@
         const useNative = ('BarcodeDetector' in window);
         let nativeBarcodeDetector = null;
         let nativeStream = null;
-
         let nativeAnimFrame = null;
         let html5Qrcode = null;
         let torchOn = false;
@@ -454,7 +453,7 @@
                               'upc_a', 'upc_e', 'itf', 'qr_code', 'data_matrix']
                 });
 
-                // კამერის გახსნა მაღალი რეზოლუციით
+                // კამერის გახსნა მაღალი რეზოლუციით + torch მხარდაჭერა
                 nativeStream = await navigator.mediaDevices.getUserMedia({
                     video: {
                         facingMode: 'environment',
@@ -527,24 +526,6 @@
                         if (sharp) barcodes = await nativeBarcodeDetector.detect(sharp);
                     }
 
-                    // 5. Center crop 2x + upscale — პატარა ბარკოდების წაკითხვა
-                    if (barcodes.length === 0) {
-                        const cropped = cropCenter(video, 2);
-                        if (cropped) barcodes = await nativeBarcodeDetector.detect(cropped);
-                    }
-
-                    // 6. Center crop 2x + binarize — დაბინდული/პატარა ბარკოდები
-                    if (barcodes.length === 0) {
-                        const cropBin = cropAndBinarize(video, 2);
-                        if (cropBin) barcodes = await nativeBarcodeDetector.detect(cropBin);
-                    }
-
-                    // 7. Center crop 3x + upscale
-                    if (barcodes.length === 0) {
-                        const cropped3 = cropCenter(video, 3);
-                        if (cropped3) barcodes = await nativeBarcodeDetector.detect(cropped3);
-                    }
-
                     for (const barcode of barcodes) {
                         if (barcode.rawValue) {
                             handleRawScan(barcode.rawValue);
@@ -596,40 +577,6 @@
             canvas.height = h;
             ctx.drawImage(video, 0, 0, w, h);
             return { canvas, ctx, w, h };
-        }
-
-        // ცენტრიდან crop + upscale — პატარა ბარკოდების წასაკითხად
-        function cropCenter(video, scale) {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            const vw = video.videoWidth;
-            const vh = video.videoHeight;
-            if (!vw || !vh) return null;
-            const cw = Math.floor(vw / scale);
-            const ch = Math.floor(vh / scale);
-            const sx = Math.floor((vw - cw) / 2);
-            const sy = Math.floor((vh - ch) / 2);
-            // upscale — crop-ს ორიგინალ ზომაზე ვაბრუნებთ (ბარკოდის ხაზები უფრო მსხვილი ხდება)
-            canvas.width = vw;
-            canvas.height = vh;
-            ctx.drawImage(video, sx, sy, cw, ch, 0, 0, vw, vh);
-            return canvas;
-        }
-
-        // crop + binarize — პატარა/დაბინდული ბარკოდების საუკეთესო შანსი
-        function cropAndBinarize(video, scale) {
-            const canvas = cropCenter(video, scale);
-            if (!canvas) return null;
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            const w = canvas.width, h = canvas.height;
-            const imgData = ctx.getImageData(0, 0, w, h);
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-                const gray = d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114;
-                d[i] = d[i+1] = d[i+2] = gray > 140 ? 255 : 0;
-            }
-            ctx.putImageData(imgData, 0, 0);
-            return canvas;
         }
 
         function enhanceFrame(video, mode) {
@@ -794,7 +741,7 @@
                 scanBtn.disabled = false;
                 scanBtn.textContent = '⏸ პაუზა';
                 scanBtn.className = 'scan-btn scanning';
-                // Torch + Zoom მხარდაჭერის შემოწმება html5-qrcode-სთვის
+                // Torch მხარდაჭერის შემოწმება html5-qrcode-სთვის
                 const h5stream = getHtml5Stream();
                 if (h5stream) checkTorchSupport(h5stream);
                 // Enhanced scan loop — canvas + binarize
@@ -861,41 +808,10 @@
                             const result = await html5Qrcode.scanFileV2(file, false);
                             if (result && result.decodedText) {
                                 handleRawScan(result.decodedText);
-                                return;
                             }
-                        } catch (e) {}
-
-                        // Center crop 2x + upscale — პატარა ბარკოდებისთვის
-                        try {
-                            const cropped = cropCenter(videoEl, 2);
-                            if (cropped) {
-                                cropped.toBlob(async (cropBlob) => {
-                                    if (!cropBlob || !scanningActive) return;
-                                    try {
-                                        const cropFile = new File([cropBlob], 'crop.png', { type: 'image/png' });
-                                        const cropResult = await html5Qrcode.scanFileV2(cropFile, false);
-                                        if (cropResult && cropResult.decodedText) {
-                                            handleRawScan(cropResult.decodedText);
-                                            return;
-                                        }
-                                    } catch(e2) {}
-                                    // crop + binarize
-                                    try {
-                                        const cropBin = cropAndBinarize(videoEl, 2);
-                                        if (cropBin) {
-                                            cropBin.toBlob(async (binBlob) => {
-                                                if (!binBlob || !scanningActive) return;
-                                                try {
-                                                    const binFile = new File([binBlob], 'cropbin.png', { type: 'image/png' });
-                                                    const binResult = await html5Qrcode.scanFileV2(binFile, false);
-                                                    if (binResult && binResult.decodedText) handleRawScan(binResult.decodedText);
-                                                } catch(e4) {}
-                                            }, 'image/png');
-                                        }
-                                    } catch(e5) {}
-                                }, 'image/png');
-                            }
-                        } catch(e3) {}
+                        } catch (e) {
+                            // სკანირება ვერ მოხერხდა — ნორმალური
+                        }
                     }, 'image/png');
                 } catch (e) {
                     // იგნორი
@@ -1131,18 +1047,7 @@
                 items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
             };
 
-            // ცდა 1: Telegram.WebApp.sendData() — პირდაპირ ბოტში, /start არ ჩანს ჩატში
-            try {
-                if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.sendData) {
-                    window.Telegram.WebApp.sendData(JSON.stringify(payload));
-                    // sendData() ავტომატურად ხურავს Mini App-ს
-                    return;
-                }
-            } catch(e) {
-                console.log('WebApp.sendData failed, falling back to Worker:', e);
-            }
-
-            // ცდა 2 (fallback): Worker relay → deep link → ბოტში გადასვლა
+            // Worker relay → deep link → ბოტში გადასვლა
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 15000);
 
@@ -1162,12 +1067,13 @@
                     const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
                     statusMsg.textContent = '✅ მონაცემები შენახულია!';
 
-                    // openTelegramLink — იხურავს Mini App-ს და გახსნის ბოტს
+                    // ცდა 1: openTelegramLink — იხურავს Mini App-ს და გახსნის ბოტს
                     let opened = false;
                     try {
                         if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.openTelegramLink) {
                             window.Telegram.WebApp.openTelegramLink(deepLink);
                             opened = true;
+                            // ზოგ ვერსიაზე Mini App არ იხურება — ხელით დავხუროთ
                             setTimeout(() => {
                                 try { window.Telegram.WebApp.close(); } catch(e2) {}
                             }, 800);
@@ -1176,6 +1082,7 @@
                         console.log('openTelegramLink failed:', e);
                     }
 
+                    // თუ openTelegramLink ვერ გახსნა — ვაჩვენოთ ღილაკი
                     if (!opened) {
                         statusMsg.innerHTML = '✅ შენახულია!<br><br>' +
                             '<a href="' + deepLink + '" style="display:inline-block;padding:16px 32px;' +
