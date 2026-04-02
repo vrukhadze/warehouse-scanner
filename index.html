@@ -527,40 +527,22 @@
                         if (sharp) barcodes = await nativeBarcodeDetector.detect(sharp);
                     }
 
-                    // 5. Center crop 1.5x + upscale
-                    if (barcodes.length === 0) {
-                        const cropped15 = cropCenter(video, 1.5);
-                        if (cropped15) barcodes = await nativeBarcodeDetector.detect(cropped15);
-                    }
-
-                    // 6. Center crop 2x + upscale — პატარა ბარკოდები
+                    // 5. Center crop 2x + upscale — პატარა ბარკოდების წაკითხვა
                     if (barcodes.length === 0) {
                         const cropped = cropCenter(video, 2);
                         if (cropped) barcodes = await nativeBarcodeDetector.detect(cropped);
                     }
 
-                    // 7. Center crop 2x + sharpen
-                    if (barcodes.length === 0) {
-                        const cropSharp = cropAndSharpen(video, 2);
-                        if (cropSharp) barcodes = await nativeBarcodeDetector.detect(cropSharp);
-                    }
-
-                    // 8. Center crop 2x + binarize (Otsu)
+                    // 6. Center crop 2x + binarize — დაბინდული/პატარა ბარკოდები
                     if (barcodes.length === 0) {
                         const cropBin = cropAndBinarize(video, 2);
                         if (cropBin) barcodes = await nativeBarcodeDetector.detect(cropBin);
                     }
 
-                    // 9. Center crop 3x + upscale
+                    // 7. Center crop 3x + upscale
                     if (barcodes.length === 0) {
                         const cropped3 = cropCenter(video, 3);
                         if (cropped3) barcodes = await nativeBarcodeDetector.detect(cropped3);
-                    }
-
-                    // 10. Center crop 3x + binarize
-                    if (barcodes.length === 0) {
-                        const cropBin3 = cropAndBinarize(video, 3);
-                        if (cropBin3) barcodes = await nativeBarcodeDetector.detect(cropBin3);
                     }
 
                     for (const barcode of barcodes) {
@@ -634,7 +616,7 @@
             return canvas;
         }
 
-        // crop + binarize (Otsu adaptive threshold)
+        // crop + binarize — პატარა/დაბინდული ბარკოდების საუკეთესო შანსი
         function cropAndBinarize(video, scale) {
             const canvas = cropCenter(video, scale);
             if (!canvas) return null;
@@ -642,58 +624,9 @@
             const w = canvas.width, h = canvas.height;
             const imgData = ctx.getImageData(0, 0, w, h);
             const d = imgData.data;
-            // grayscale
             for (let i = 0; i < d.length; i += 4) {
                 const gray = d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114;
-                d[i] = d[i+1] = d[i+2] = gray;
-            }
-            // Otsu threshold
-            const hist = new Uint32Array(256);
-            for (let i = 0; i < d.length; i += 4) hist[d[i]]++;
-            const totalPx = d.length / 4;
-            let sumAll = 0;
-            for (let t = 0; t < 256; t++) sumAll += t * hist[t];
-            let sumB = 0, wB = 0, maxVar = 0, threshold = 128;
-            for (let t = 0; t < 256; t++) {
-                wB += hist[t];
-                if (wB === 0) continue;
-                const wF = totalPx - wB;
-                if (wF === 0) break;
-                sumB += t * hist[t];
-                const mB = sumB / wB;
-                const mF = (sumAll - sumB) / wF;
-                const between = wB * wF * (mB - mF) * (mB - mF);
-                if (between > maxVar) { maxVar = between; threshold = t; }
-            }
-            for (let i = 0; i < d.length; i += 4) {
-                const v = d[i] > threshold ? 255 : 0;
-                d[i] = d[i+1] = d[i+2] = v;
-            }
-            ctx.putImageData(imgData, 0, 0);
-            return canvas;
-        }
-
-        // crop + sharpen — პატარა ბარკოდის ხაზების გამოკვეთა
-        function cropAndSharpen(video, scale) {
-            const canvas = cropCenter(video, scale);
-            if (!canvas) return null;
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            const w = canvas.width, h = canvas.height;
-            const imgData = ctx.getImageData(0, 0, w, h);
-            const src = new Uint8ClampedArray(imgData.data);
-            const d = imgData.data;
-            for (let y = 1; y < h - 1; y++) {
-                for (let x = 1; x < w - 1; x++) {
-                    const idx = (y * w + x) * 4;
-                    for (let c = 0; c < 3; c++) {
-                        const v = 5 * src[idx + c]
-                            - src[((y-1)*w+x)*4+c]
-                            - src[((y+1)*w+x)*4+c]
-                            - src[(y*w+x-1)*4+c]
-                            - src[(y*w+x+1)*4+c];
-                        d[idx + c] = v < 0 ? 0 : v > 255 ? 255 : v;
-                    }
-                }
+                d[i] = d[i+1] = d[i+2] = gray > 140 ? 255 : 0;
             }
             ctx.putImageData(imgData, 0, 0);
             return canvas;
