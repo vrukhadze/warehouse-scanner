@@ -753,9 +753,20 @@
                 scanBtn.disabled = false;
                 scanBtn.textContent = '⏸ პაუზა';
                 scanBtn.className = 'scan-btn scanning';
-                // Torch მხარდაჭერის შემოწმება html5-qrcode-სთვის
+                // Torch + Zoom მხარდაჭერის შემოწმება html5-qrcode-სთვის
                 const h5stream = getHtml5Stream();
-                if (h5stream) checkTorchSupport(h5stream);
+                if (h5stream) {
+                    checkTorchSupport(h5stream);
+                    // Zoom — iPhone-ზე ახლო ბარკოდის წასაკითხად
+                    try {
+                        const track = h5stream.getVideoTracks()[0];
+                        const caps = track.getCapabilities ? track.getCapabilities() : {};
+                        if (caps.zoom) {
+                            const targetZoom = Math.min(2.0, caps.zoom.max);
+                            track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
+                        }
+                    } catch(zoomErr) { /* zoom not supported — OK */ }
+                }
                 // Enhanced scan loop — canvas + binarize
                 startH5EnhancedScan();
             }).catch(err => {
