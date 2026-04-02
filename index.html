@@ -451,7 +451,14 @@
 
         const html5Config = {
             fps: 15,
-            qrbox: { width: 280, height: 150 },
+            qrbox: function(viewfinderWidth, viewfinderHeight) {
+                // სკანირების არე — ეკრანის 80%, მინ. 280px
+                return {
+                    width: Math.max(280, Math.floor(viewfinderWidth * 0.8)),
+                    height: Math.max(150, Math.floor(viewfinderHeight * 0.5))
+                };
+            },
+            experimentalFeatures: { useBarCodeDetectorIfSupported: true },
             aspectRatio: 1.5,
             formatsToSupport: [
                 Html5QrcodeSupportedFormats.EAN_13,
