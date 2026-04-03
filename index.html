@@ -403,8 +403,12 @@
             return null;  // ჯერ არ არის საკმარისი
         }
 
+        // ===== Platform Detection =====
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
         // ===== Engine Detection =====
-        const useNative = ('BarcodeDetector' in window);
+        // iOS Safari არ უჭერს მხარს BarcodeDetector API-ს — ყოველთვის html5-qrcode
+        const useNative = ('BarcodeDetector' in window) && !isIOS;
         let nativeBarcodeDetector = null;
         let nativeStream = null;
         let nativeAnimFrame = null;
@@ -423,9 +427,10 @@
         }
 
         const html5Config = {
-            fps: 15,
-            qrbox: { width: 280, height: 150 },
+            fps: isIOS ? 30 : 15,
+            qrbox: isIOS ? { width: 320, height: 180 } : { width: 280, height: 150 },
             aspectRatio: 1.5,
+            disableFlip: false,
             formatsToSupport: [
                 Html5QrcodeSupportedFormats.EAN_13,
                 Html5QrcodeSupportedFormats.EAN_8,
@@ -439,6 +444,14 @@
                 Html5QrcodeSupportedFormats.DATA_MATRIX,
             ]
         };
+        // iOS — videoConstraints კონფიგურაციაში, რეზოლუციის კონტროლისთვის
+        if (isIOS) {
+            html5Config.videoConstraints = {
+                facingMode: "environment",
+                width: { min: 640, ideal: 1280 },
+                height: { min: 480, ideal: 720 }
+            };
+        }
 
         // ===== Native BarcodeDetector სკანირება =====
         async function startNativeCamera() {
@@ -454,15 +467,19 @@
                 });
 
                 // კამერის გახსნა მაღალი რეზოლუციით + torch მხარდაჭერა
+                const videoConstraints = {
+                    facingMode: 'environment',
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 },
+                };
+                // iOS Safari არ უჭერს მხარს focusMode/exposureMode — გამოტოვება
+                if (!isIOS) {
+                    videoConstraints.focusMode = { ideal: 'continuous' };
+                    videoConstraints.exposureMode = { ideal: 'continuous' };
+                    videoConstraints.whiteBalanceMode = { ideal: 'continuous' };
+                }
                 nativeStream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 },
-                        focusMode: { ideal: 'continuous' },
-                        exposureMode: { ideal: 'continuous' },
-                        whiteBalanceMode: { ideal: 'continuous' }
-                    }
+                    video: videoConstraints
                 });
 
                 const video = document.getElementById('nativeVideo');
@@ -859,7 +876,7 @@
                 } catch (e) {
                     // იგნორი
                 }
-            }, 500);
+            }, isIOS ? 300 : 500);
         }
 
         function stopH5EnhancedScan() {
