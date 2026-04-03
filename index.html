@@ -966,13 +966,8 @@
                 document.getElementById('lastScan').textContent = '';
             }, 2000);
 
-            // სკანირების შემდეგ მოკლე პაუზა და ავტო-რეზუმე
-            scanningActive = false;
-            setTimeout(() => {
-                if (cameraStarted && !scanningActive) {
-                    resumeScanning();
-                }
-            }, 800);
+            // სკანირების შემდეგ პაუზა
+            pauseScanning();
         }
 
         // ===== ღილაკის toggle =====
