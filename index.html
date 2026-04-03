@@ -524,10 +524,12 @@
         // Enhancement სტრატეგიები — ყოველ frame-ზე მხოლოდ 1 ეშვება, როტაციით
         let _scanStrategy = 0;
         // ბნელზე brighten/binarize ხშირად, ნათელზე darken ხშირად
-        const _STRATEGIES_DARK = ['brighten', 'binarize', 'crop', 'brighten', 'sharpen', 'binarize'];
-        const _STRATEGIES_BRIGHT = ['darken', 'binarize', 'crop', 'darken', 'binarize', 'raw'];
-        const _STRATEGIES_NORMAL = ['raw', 'binarize', 'crop', 'brighten', 'sharpen', 'darken'];
+        const _STRATEGIES_DARK = ['brighten', 'binarize', 'crop', 'brighten', 'accumulate', 'binarize'];
+        const _STRATEGIES_BRIGHT = ['darken', 'binarize', 'crop', 'darken', 'binarize', 'accumulate'];
+        const _STRATEGIES_NORMAL = ['raw', 'binarize', 'crop', 'brighten', 'accumulate', 'darken'];
         let _lastAvgBrightness = 128;
+        // Frame accumulation — ხელის კანკალის კომპენსაცია (2 ფრეიმის გაშუალება)
+        let _prevFrame = null;
 
         async function nativeScanLoop() {
             if (!cameraStarted) return;
@@ -552,7 +554,9 @@
                         _scanStrategy++;
                         let enhanced = null;
                         if (strategy === 'crop') {
-                            enhanced = cropCenter(video, 2);
+                            enhanced = cropCenter(video, 1.5);
+                        } else if (strategy === 'accumulate') {
+                            enhanced = accumulateFrames(video);
                         } else if (strategy !== 'raw') {
                             enhanced = enhanceFrame(video, strategy);
                         }
@@ -632,6 +636,36 @@
             return canvas;
         }
 
+        // Frame accumulation — 2 ფრეიმის გაშუალება (კანკალის კომპენსაცია)
+        function accumulateFrames(video) {
+            try {
+                const vw = video.videoWidth, vh = video.videoHeight;
+                if (!vw || !vh) return null;
+                const canvas = document.createElement('canvas');
+                canvas.width = vw; canvas.height = vh;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(video, 0, 0, vw, vh);
+                const curData = ctx.getImageData(0, 0, vw, vh);
+                const cur = curData.data;
+
+                if (_prevFrame && _prevFrame.length === cur.length) {
+                    // გაშუალება + კონტრასტის გაზრდა
+                    for (let i = 0; i < cur.length; i += 4) {
+                        for (let c = 0; c < 3; c++) {
+                            let avg = (cur[i+c] + _prevFrame[i+c]) >> 1;
+                            // კონტრასტი — blur-ის კომპენსაცია
+                            avg = ((avg - 128) * 1.3 + 128);
+                            cur[i+c] = avg < 0 ? 0 : avg > 255 ? 255 : avg;
+                        }
+                    }
+                    ctx.putImageData(curData, 0, 0);
+                }
+                // მიმდინარე ფრეიმი შევინახოთ
+                _prevFrame = new Uint8ClampedArray(ctx.getImageData(0, 0, vw, vh).data);
+                return canvas;
+            } catch(e) { return null; }
+        }
+
         function enhanceFrame(video, mode) {
             try {
                 const cap = captureToCanvas(video);
@@ -702,16 +736,16 @@
                     // Unsharp mask: sharpen kernel convolution
                     if (avgBright > 150) return null; // ნათელი სურათი — არ სჭირდება
                     const src = new Uint8ClampedArray(data);
-                    // kernel: 0 -1 0 / -1 5 -1 / 0 -1 0
+                    // kernel: 0 -1.5 0 / -1.5 7 -1.5 / 0 -1.5 0
                     for (let y = 1; y < h - 1; y++) {
                         for (let x = 1; x < w - 1; x++) {
                             const idx = (y * w + x) * 4;
                             for (let c = 0; c < 3; c++) {
-                                const v = 5 * src[idx + c]
-                                    - src[((y-1)*w + x)*4 + c]
-                                    - src[((y+1)*w + x)*4 + c]
-                                    - src[(y*w + x-1)*4 + c]
-                                    - src[(y*w + x+1)*4 + c];
+                                const v = 7 * src[idx + c]
+                                    - 1.5 * src[((y-1)*w + x)*4 + c]
+                                    - 1.5 * src[((y+1)*w + x)*4 + c]
+                                    - 1.5 * src[(y*w + x-1)*4 + c]
+                                    - 1.5 * src[(y*w + x+1)*4 + c];
                                 data[idx + c] = v < 0 ? 0 : v > 255 ? 255 : v;
                             }
                         }
