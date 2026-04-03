@@ -531,6 +531,56 @@
         // Frame accumulation — ხელის კანკალის კომპენსაცია (2 ფრეიმის გაშუალება)
         let _prevFrame = null;
 
+        // მხოლოდ მწვანე overlay მართკუთხედის შიგნით crop
+        function cropToScanOverlay(video) {
+            const videoEl = document.getElementById('nativeVideo');
+            const overlayEl = document.getElementById('scanOverlay');
+            if (!videoEl || !overlayEl) return null;
+
+            const videoRect = videoEl.getBoundingClientRect();
+            const overlayRect = overlayEl.getBoundingClientRect();
+            const videoW = video.videoWidth;
+            const videoH = video.videoHeight;
+            const displayW = videoRect.width;
+            const displayH = videoRect.height;
+            if (!displayW || !displayH || !videoW || !videoH) return null;
+
+            // object-fit: cover — video-ს კოეფიციენტები display-ის კოეფიციენტებთან
+            const videoAspect = videoW / videoH;
+            const displayAspect = displayW / displayH;
+            let scaleX, offsetX, offsetY;
+            if (videoAspect > displayAspect) {
+                // ვიდეო განიერია — სიმაღლით ვასკეილებთ, გვერდები იჭრება
+                const scale = videoH / displayH;
+                scaleX = scale;
+                offsetX = (videoW - displayW * scale) / 2;
+                offsetY = 0;
+            } else {
+                // ვიდეო მაღალია — სიგანით ვასკეილებთ, ზედა/ქვედა იჭრება
+                const scale = videoW / displayW;
+                scaleX = scale;
+                offsetX = 0;
+                offsetY = (videoH - displayH * scale) / 2;
+            }
+
+            const relLeft = overlayRect.left - videoRect.left;
+            const relTop  = overlayRect.top  - videoRect.top;
+            const srcX = Math.max(0, relLeft * scaleX + offsetX);
+            const srcY = Math.max(0, relTop  * scaleX + offsetY);
+            const srcW = Math.min(videoW - srcX, overlayRect.width  * scaleX);
+            const srcH = Math.min(videoH - srcY, overlayRect.height * scaleX);
+            if (srcW <= 0 || srcH <= 0) return null;
+
+            // upscale ≥ 640px სიგანე — პატარა barcodes-ისთვის
+            const targetW = Math.max(640, Math.round(srcW));
+            const targetH = Math.round(targetW * srcH / srcW);
+            const canvas = document.createElement('canvas');
+            canvas.width = targetW;
+            canvas.height = targetH;
+            canvas.getContext('2d').drawImage(video, srcX, srcY, srcW, srcH, 0, 0, targetW, targetH);
+            return canvas;
+        }
+
         async function nativeScanLoop() {
             if (!cameraStarted) return;
 
@@ -542,8 +592,11 @@
 
             if (scanningActive && nativeBarcodeDetector) {
                 try {
-                    // ყოველთვის ჯერ პირდაპირ ვიდეოდან
-                    let barcodes = await nativeBarcodeDetector.detect(video);
+                    // მხოლოდ მწვანე overlay-ს შიგნით detect (კადრში სხვა barcodes-ის გამოსარიცხად)
+                    const overlayCanvas = cropToScanOverlay(video);
+                    let barcodes = overlayCanvas
+                        ? await nativeBarcodeDetector.detect(overlayCanvas)
+                        : await nativeBarcodeDetector.detect(video);
 
                     // თუ ვერ წაიკითხა — მიმდინარე სტრატეგიით ცდა (სიკაშკაშეზე ადაპტური)
                     if (barcodes.length === 0) {
