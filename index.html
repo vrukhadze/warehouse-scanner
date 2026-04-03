@@ -908,8 +908,11 @@
             lastScannedTime = now;
 
             // ვიბრაცია
-            if (navigator.vibrate) navigator.vibrate(100);
-            try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+            if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+            try {
+                tg.HapticFeedback.impactOccurred('heavy');
+                setTimeout(() => tg.HapticFeedback.notificationOccurred('success'), 80);
+            } catch(e) {}
 
             addCode(confirmed);
 
