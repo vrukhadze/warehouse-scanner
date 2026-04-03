@@ -576,13 +576,17 @@
             }
             const avg = total / samples;
 
-            // Auto-torch: თუ ზედიზედ 15 ფრეიმი ბნელია — ფანარი ავტომატურად ჩაირთოს
-            if (avg < 70) {
+            // Auto-torch: ბნელზე ჩართვა, გადანათებაზე გამორთვა
+            if (avg < 50) {
                 darkFrameCount++;
-                if (darkFrameCount >= 15 && torchSupported && !torchOn && !autoTorchTriggered) {
+                if (darkFrameCount >= 20 && torchSupported && !torchOn && !autoTorchTriggered) {
                     autoTorchTriggered = true;
                     toggleTorch();
                 }
+            } else if (avg > 220 && torchOn && torchSupported) {
+                // ფანარი გადანათებას იწვევს — გამორთვა
+                toggleTorch();
+                autoTorchTriggered = false;
             } else {
                 darkFrameCount = Math.max(0, darkFrameCount - 1);
             }
@@ -642,11 +646,13 @@
                         }
                     }
                 } else if (mode === 'darken') {
-                    // ფანარით ზედმეტი სიკაშკაშის კომპენსაცია
-                    if (avgBright < 180) return null;
-                    const contrast = 2.0;
+                    // ფანარით ზედმეტი სიკაშკაშის კომპენსაცია — აგრესიული
+                    if (avgBright < 150) return null;
+                    // რაც უფრო ნათელია, მით მეტი კომპენსაცია
+                    const overexposure = avgBright - 130;
+                    const dim = Math.min(100, overexposure);
+                    const contrast = avgBright > 210 ? 3.0 : avgBright > 180 ? 2.5 : 2.0;
                     const mid = 128;
-                    const dim = Math.min(60, avgBright - 150);
                     for (let i = 0; i < data.length; i += 4) {
                         for (let c = 0; c < 3; c++) {
                             let v = data[i + c];
@@ -852,11 +858,21 @@
                     const imgData = enhCtx.getImageData(0, 0, vw, vh);
                     const d = imgData.data;
 
-                    // Brightness boost + binarize combo
+                    // ადაპტური binarize — სიკაშკაშის მიხედვით
+                    // ჯერ საშუალო სიკაშკაშე
+                    let graySum = 0;
+                    for (let i = 0; i < d.length; i += 16) {
+                        graySum += d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114;
+                    }
+                    const avgGray = graySum / (d.length / 16);
+                    // ბნელ სურათზე — boost + დაბალი threshold; ნათელზე — dim + მაღალი threshold
+                    const boostFactor = avgGray < 100 ? 1.4 : avgGray < 160 ? 1.0 : 0.7;
+                    const boostOffset = avgGray < 100 ? 30 : avgGray < 160 ? 0 : -40;
+                    const binThreshold = avgGray < 100 ? 130 : avgGray < 160 ? 140 : 120;
                     for (let i = 0; i < d.length; i += 4) {
                         let gray = d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114;
-                        gray = Math.min(255, gray * 1.4 + 30); // boost
-                        d[i] = d[i+1] = d[i+2] = gray > 140 ? 255 : 0;
+                        gray = Math.max(0, Math.min(255, gray * boostFactor + boostOffset));
+                        d[i] = d[i+1] = d[i+2] = gray > binThreshold ? 255 : 0;
                     }
                     enhCtx.putImageData(imgData, 0, 0);
 
@@ -908,10 +924,31 @@
             lastScannedTime = now;
 
             // ვიბრაცია
+            // ვიბრაცია — Android
             if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+            // Haptic — iOS/Android Telegram WebApp
             try {
-                tg.HapticFeedback.impactOccurred('heavy');
-                setTimeout(() => tg.HapticFeedback.notificationOccurred('success'), 80);
+                if (tg && tg.HapticFeedback) {
+                    tg.HapticFeedback.impactOccurred('heavy');
+                    setTimeout(() => {
+                        try { tg.HapticFeedback.impactOccurred('heavy'); } catch(e2) {}
+                    }, 100);
+                    setTimeout(() => {
+                        try { tg.HapticFeedback.notificationOccurred('success'); } catch(e3) {}
+                    }, 200);
+                }
+            } catch(e) {}
+            // AudioContext beep — უნივერსალური fallback
+            try {
+                const actx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = actx.createOscillator();
+                const gain = actx.createGain();
+                osc.connect(gain);
+                gain.connect(actx.destination);
+                osc.frequency.value = 1200;
+                gain.gain.value = 0.3;
+                osc.start();
+                osc.stop(actx.currentTime + 0.12);
             } catch(e) {}
 
             addCode(confirmed);
