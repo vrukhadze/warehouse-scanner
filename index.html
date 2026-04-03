@@ -360,7 +360,7 @@
         // ===== Multi-scan consensus =====
         // რამდენიმე ფრეიმის სკანირება და ყველაზე ხშირი შედეგის არჩევა
         const CONSENSUS_THRESHOLD = 2;  // 2-ჯერ ერთნაირი = დადასტურებული
-        const CONSENSUS_WINDOW = 1500;  // 1.5 წამის ფანჯარა
+        const CONSENSUS_WINDOW = 2000;  // 2 წამის ფანჯარა
         let scanBuffer = [];  // [{code, time}, ...]
 
         function addToBuffer(code) {
@@ -523,7 +523,11 @@
 
         // Enhancement სტრატეგიები — ყოველ frame-ზე მხოლოდ 1 ეშვება, როტაციით
         let _scanStrategy = 0;
-        const _STRATEGIES = ['raw', 'binarize', 'crop', 'brighten', 'sharpen', 'darken'];
+        // ბნელზე brighten/binarize ხშირად, ნათელზე darken ხშირად
+        const _STRATEGIES_DARK = ['brighten', 'binarize', 'crop', 'brighten', 'sharpen', 'binarize'];
+        const _STRATEGIES_BRIGHT = ['darken', 'binarize', 'crop', 'darken', 'binarize', 'raw'];
+        const _STRATEGIES_NORMAL = ['raw', 'binarize', 'crop', 'brighten', 'sharpen', 'darken'];
+        let _lastAvgBrightness = 128;
 
         async function nativeScanLoop() {
             if (!cameraStarted) return;
@@ -539,9 +543,12 @@
                     // ყოველთვის ჯერ პირდაპირ ვიდეოდან
                     let barcodes = await nativeBarcodeDetector.detect(video);
 
-                    // თუ ვერ წაიკითხა — მიმდინარე სტრატეგიით ცდა
+                    // თუ ვერ წაიკითხა — მიმდინარე სტრატეგიით ცდა (სიკაშკაშეზე ადაპტური)
                     if (barcodes.length === 0) {
-                        const strategy = _STRATEGIES[_scanStrategy % _STRATEGIES.length];
+                        const strategies = _lastAvgBrightness < 80 ? _STRATEGIES_DARK
+                            : _lastAvgBrightness > 180 ? _STRATEGIES_BRIGHT
+                            : _STRATEGIES_NORMAL;
+                        const strategy = strategies[_scanStrategy % strategies.length];
                         _scanStrategy++;
                         let enhanced = null;
                         if (strategy === 'crop') {
@@ -575,6 +582,7 @@
                 samples++;
             }
             const avg = total / samples;
+            _lastAvgBrightness = avg;
 
             // Auto-torch: ბნელზე ჩართვა, გადანათებაზე გამორთვა
             if (avg < 50) {
@@ -917,7 +925,7 @@
             // ✅ კონსენსუსით დადასტურებული კოდი!
             const now = Date.now();
             // დუბლიკატის ფილტრი (იგივე კოდი 3 წამში)
-            if (confirmed === lastScannedCode && (now - lastScannedTime) < 3000) {
+            if (confirmed === lastScannedCode && (now - lastScannedTime) < 1500) {
                 return;
             }
             lastScannedCode = confirmed;
@@ -958,8 +966,13 @@
                 document.getElementById('lastScan').textContent = '';
             }, 2000);
 
-            // სკანირების შემდეგ პაუზა
-            pauseScanning();
+            // სკანირების შემდეგ მოკლე პაუზა და ავტო-რეზუმე
+            scanningActive = false;
+            setTimeout(() => {
+                if (cameraStarted && !scanningActive) {
+                    resumeScanning();
+                }
+            }, 800);
         }
 
         // ===== ღილაკის toggle =====
