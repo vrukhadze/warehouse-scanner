@@ -113,8 +113,9 @@
     }
 
     // scans → [{code, qty}], ბოლო კოდი პირველი. where (id → counted/saved) → სტრიქონს state ემატება —
-    // ყველაზე „ახალი": local (ჯერ არ გაიგზავნა) > saved (Worker-შია) > counted (ბოტმა დაითვალა)
-    function aggregate(scans, where) {
+    // ყველაზე „ახალი": local (ჯერ არ გაიგზავნა) > saved (Worker-შია) > counted (ბოტმა დაითვალა).
+    // marks ([{code, state}] — გაუქმებები) სტრიქონის state-ს ასევე აახლებს, თუ ეს კოდი ჯერ კიდევ ჩანს
+    function aggregate(scans, where, marks) {
       var rank = { counted: 0, saved: 1, local: 2 };
       var qty = {}, last = {}, st = {};
       scans.forEach(function (e, i) {
@@ -122,6 +123,9 @@
         last[e.code] = i;
         var w = (where && where[e.id]) || "local";
         if (!st[e.code] || rank[w] > rank[st[e.code]]) st[e.code] = w;
+      });
+      (marks || []).forEach(function (m) {
+        if (st[m.code] && rank[m.state] > rank[st[m.code]]) st[m.code] = m.state;
       });
       return Object.keys(qty)
         .sort(function (a, b) { return last[b] - last[a]; })
@@ -139,12 +143,29 @@
       return where;
     }
 
+    // გაუქმება თავისი სკანის კოდის სტრიქონს თავის მდგომარეობას აძლევს: გაუგზავნელი გაუქმება → ⏳ (არა ✓)
+    function undoMarks(where) {
+      var all = events(state), codeOf = Object.create(null), out = [];
+      all.forEach(function (e) { if (e.t === "scan") codeOf[e.id] = e.code; });
+      all.forEach(function (e) {
+        if (e.t === "undo" && codeOf[e.target] !== undefined) {
+          out.push({ code: codeOf[e.target], state: where[e.id] || "local" });
+        }
+      });
+      return out;
+    }
+
     function pendingScans(st) { return st.pending.filter(function (e) { return e.t === "scan"; }); }
 
+    // ჯერ გასაგზავნი ცვლილებები (R22): pending + inflight-ის ცოცხალი სკანები და გაუქმებები. სკანი და მისი
+    // გაუქმება, ორივე ჯერ გაუგზავნელი, ერთმანეთს აბათილებს (0). ეს რიცხვია ბანერიც, hbDue-ც და hb-ის pending-იც
     function pendingCount() {
-      var undone = undoneSet(events(state));
-      return flat(state.inflight).concat(state.pending).filter(function (e) {
-        return e.t === "scan" && !undone[e.id];
+      var unsent = flat(state.inflight).concat(state.pending);
+      var undone = undoneSet(events(state)), mine = Object.create(null);
+      unsent.forEach(function (e) { if (e.t === "scan") mine[e.id] = true; });
+      return unsent.filter(function (e) {
+        if (e.t === "scan") return !undone[e.id];
+        return e.t === "undo" && !mine[e.target];
       }).length;
     }
 
@@ -178,7 +199,10 @@
         return live.length ? removeScan(live[live.length - 1]) : null;
       },
       items: function () { return aggregate(liveScans(state)); },
-      rows: function () { return aggregate(liveScans(state), whereMap()); },
+      rows: function () {
+        var where = whereMap();
+        return aggregate(liveScans(state), where, undoMarks(where));
+      },
       pendingCount: pendingCount,
       // ფაზა A-ს ძველი გაგზავნა (k-ს გარეშე): მხოლოდ ის, რაც პაკეტად ჯერ არ წასულა — თორემ ორჯერ ჩაითვლება
       legacyItems: function () { return aggregate(pendingScans(state)); },
@@ -255,7 +279,7 @@
         });
         return n;
       },
-      // heartbeat მხოლოდ ცვლილებისას: გაუგზავნელი სკანების რიცხვი, თუ Worker-ს სხვა აქვს; თორემ null
+      // heartbeat მხოლოდ ცვლილებისას: გაუგზავნელის რიცხვი (pendingCount — გაუქმებებიც), თუ Worker-ს სხვა აქვს; თორემ null
       hbDue: function () {
         var n = pendingCount();
         var last = typeof state.lastHb === "number" ? state.lastHb : 0;

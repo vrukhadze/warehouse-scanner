@@ -345,7 +345,7 @@
         <button class="btn btn-send" id="sendBtn" onclick="sendData()" disabled>✅ დასრულება</button>
     </div>
 
-    <script src="rcv-outbox.js?v=4"></script>
+    <script src="rcv-outbox.js?v=5"></script>
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
@@ -421,14 +421,22 @@
             return Array.from(b, x => x.toString(16).padStart(2, '0')).join('').slice(0, n);
         }
         if (RCV_MODE) {
-            outbox = RcvOutbox.open({
-                storage: window.localStorage,
-                rid: RID,
-                uid: RCV_UID,
-                k: RCV_K,
-                now: Date.now,
-                rand: rcvRand
-            });
+            try {
+                outbox = RcvOutbox.open({
+                    storage: window.localStorage,
+                    rid: RID,
+                    uid: RCV_UID,
+                    k: RCV_K,
+                    now: Date.now,
+                    rand: rcvRand
+                });
+            } catch (e) {
+                // rcv-outbox.js ვერ ჩაიტვირთა (404 / ძველი ქეში) ან localStorage აკრძალულია (SecurityError) —
+                // მკვდარი გვერდის მაგივრად მხოლოდ ეს ტექსტი; სკრიპტი აქ ჩერდება (Telegram-ის დახურვის ღილაკი რჩება)
+                document.body.innerHTML = '<div style="padding:48px 24px;text-align:center;font-size:20px;font-weight:700">' +
+                    'სკანერი ვერ ჩაიტვირთა — დახურეთ და თავიდან გახსენით.</div>';
+                throw e;
+            }
             document.getElementById('clearBtn').style.display = 'none';
             if (RCV_LIVE) {
                 document.querySelector('.bottom-bar').style.display = 'none';
@@ -1614,7 +1622,8 @@
 
         // ===== მიღება k-ით: სკანი მაშინვე Worker-ზე, ბოტის სტატუსი უკან =====
         // Cloudflare Free (R10): გაგზავნა ბოლო ცვლილებიდან ~2 წმ-ში (რამდენიმე სკანი — ერთ პაკეტად, მაქს. 8 წმ
-        // პირველიდან), ჩავარდნისას 2→4→8→…→60 წმ; hb მხოლოდ გაუგზავნელის რიცხვის ცვლილებაზე; სტატუსი 15 წმ-ში.
+        // პირველიდან), ჩავარდნისას 2→4→8→…→60 წმ; hb მხოლოდ გაუგზავნელის რიცხვის ცვლილებაზე (და არა მაშინ, როცა
+        // გაგზავნა უკვე დაგეგმილია); სტატუსი 15 წმ-ში.
         const RCV_DEBOUNCE_MS = 2000, RCV_MAX_WAIT_MS = 8000, RCV_BACKOFF_MAX_MS = 60000, RCV_POLL_MS = 15000;
 
         function rcvNum(x) {
@@ -1735,7 +1744,9 @@
         async function rcvPollStatus() {
             if (!RCV_LIVE || rcvClosed || rcvPolling || document.visibilityState !== 'visible') return;
             await rcvRefreshStatus();
-            await rcvHeartbeat();
+            // გაგზავნა უკვე დაგეგმილია / მიმდინარეობს და ჩავარდნა არ ყოფილა → hb აქ არა (ცარიელი pending:N → 0
+            // წყვილი ჩაწერის ბიუჯეტს ჭამს); hb გაუგზავნელს მხოლოდ ჩავარდნის შემდეგ / backoff-ისას ამბობს
+            if (!((rcvTimer || rcvFlushing) && !rcvBackoff)) await rcvHeartbeat();
             renderList();
         }
 

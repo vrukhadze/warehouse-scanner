@@ -401,3 +401,39 @@ test("recent or unsent outbox of another rid is kept", () => {
   ["r2", "r3", "r4", "r5"].forEach((rid) => assert.ok(s.getItem(`rcv_outbox_v2:${rid}:7`), rid));
   assert.equal(mk(s, "r4", "7").k(), K);
 });
+
+// ---- final fix: გაუგზავნელი გაუქმებაც „ჯერ არ გაიგზავნა"-ა (R22) ----
+
+test("removeOne of a counted scan shows as unsent until acked", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  o.addScan("A"); o.addScan("A");
+  const p1 = sendOne(o);
+  o.reconcile([p1.cid]);
+  o.hbSent(0);
+  assert.deepEqual(o.rows(), [{ code: "A", qty: 2, state: "counted" }]);
+  const u = o.removeOne("A");          // ტელეფონი ხაზგარეშეა — გაუქმება pending-შია
+  assert.equal(u.t, "undo");
+  assert.equal(o.pendingCount(), 1);
+  assert.equal(o.hbDue(), 1);
+  assert.deepEqual(o.rows(), [{ code: "A", qty: 1, state: "local" }]);   // ⏳, არა ✓
+  o.hbSent(1);
+  const p2 = sendOne(o);
+  assert.equal(o.pendingCount(), 0);
+  assert.equal(o.hbDue(), 0);
+  assert.deepEqual(o.rows(), [{ code: "A", qty: 1, state: "saved" }]);   // Worker-ზეა, ბოტს ჯერ არ დაუთვლია
+  o.reconcile([p1.cid, p2.cid]);
+  assert.deepEqual(o.rows(), [{ code: "A", qty: 1, state: "counted" }]);
+});
+
+test("a scan and its own undo both unsent count as nothing", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  o.addScan("A");
+  o.nextPacket("init");                // A — inflight (Worker-ს ჯერ არ მიუღია)
+  const u = o.undoLast();              // გაუქმება — pending
+  assert.equal(u.t, "undo");
+  assert.equal(o.pendingCount(), 0);
+  assert.equal(o.hbDue(), null);
+  assert.deepEqual(o.rows(), []);
+  o.addScan("B");
+  assert.equal(o.pendingCount(), 1);
+});
