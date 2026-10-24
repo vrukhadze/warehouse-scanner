@@ -425,15 +425,15 @@ test("removeOne of a counted scan shows as unsent until acked", () => {
   assert.deepEqual(o.rows(), [{ code: "A", qty: 1, state: "counted" }]);
 });
 
-test("a scan and its own undo both unsent count as nothing", () => {
+test("an undo of an inflight scan stays unsent until it is sent (R29)", () => {
   const o = mk(memStorage(), "r1", "7", K);
   o.addScan("A");
-  o.nextPacket("init");                // A — inflight (Worker-ს ჯერ არ მიუღია)
+  o.nextPacket("init");                // A — inflight (Worker-ს შეიძლება უკვე აქვს, ack დაიკარგა)
   const u = o.undoLast();              // გაუქმება — pending
   assert.equal(u.t, "undo");
-  assert.equal(o.pendingCount(), 0);
-  assert.equal(o.hbDue(), null);
+  assert.equal(o.pendingCount(), 1);
+  assert.notEqual(o.hbDue(), null);
   assert.deepEqual(o.rows(), []);
   o.addScan("B");
-  assert.equal(o.pendingCount(), 1);
+  assert.equal(o.pendingCount(), 2);
 });

@@ -157,15 +157,15 @@
 
     function pendingScans(st) { return st.pending.filter(function (e) { return e.t === "scan"; }); }
 
-    // ჯერ გასაგზავნი ცვლილებები (R22): pending + inflight-ის ცოცხალი სკანები და გაუქმებები. სკანი და მისი
-    // გაუქმება, ორივე ჯერ გაუგზავნელი, ერთმანეთს აბათილებს (0). ეს რიცხვია ბანერიც, hbDue-ც და hb-ის pending-იც
+    // ჯერ გასაგზავნი ცვლილებები (R22, R29): pending + inflight-ის ცოცხალი სკანები და ყველა გაუქმება. pending
+    // სკანის გაუქმება მას უბრალოდ შლის; inflight სკანი კი Worker-ს შეიძლება უკვე აქვს (ack დაიკარგა), ამიტომ მისი
+    // გაუქმებაც გაუგზავნელად ითვლება. ეს რიცხვია ბანერიც, hbDue-ც და hb-ის pending-იც
     function pendingCount() {
       var unsent = flat(state.inflight).concat(state.pending);
-      var undone = undoneSet(events(state)), mine = Object.create(null);
-      unsent.forEach(function (e) { if (e.t === "scan") mine[e.id] = true; });
+      var undone = undoneSet(events(state));
       return unsent.filter(function (e) {
         if (e.t === "scan") return !undone[e.id];
-        return e.t === "undo" && !mine[e.target];
+        return e.t === "undo";
       }).length;
     }
 
