@@ -259,6 +259,31 @@
             font-weight: 600;
             cursor: pointer;
         }
+        #rcvResume {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 1000;
+            background: var(--tg-theme-bg-color, #1a1a2e);
+            color: var(--tg-theme-text-color, #eee);
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            padding: 24px;
+            text-align: center;
+        }
+        #rcvResume .rcv-count { font-size: 20px; font-weight: 700; }
+        #rcvResume .rcv-msg { font-size: 15px; color: #ff8a80; }
+        #rcvResume button {
+            padding: 22px 40px;
+            border-radius: 16px;
+            border: none;
+            background: var(--tg-theme-button-color, #0088cc);
+            color: var(--tg-theme-button-text-color, #fff);
+            font-size: 22px;
+            font-weight: 700;
+        }
         .engine-badge {
             text-align: center;
             padding: 2px 8px;
@@ -294,6 +319,12 @@
     </div>
     <div class="total-bar" id="totalBar"></div>
     <div id="statusMsg"></div>
+    <!-- მიღების რეჟიმი: ზარის / აპის გადართვის შემდეგ კამერის ხელით ჩართვა -->
+    <div id="rcvResume">
+        <div class="rcv-count" id="rcvResumeCount"></div>
+        <button id="rcvResumeBtn" type="button">📷 კამერის ჩართვა</button>
+        <div class="rcv-msg" id="rcvResumeMsg"></div>
+    </div>
     <div class="bottom-bar">
         <button class="btn btn-clear" id="clearBtn" onclick="clearAll()">🗑 გასუფთავება</button>
         <button class="btn btn-send" id="sendBtn" onclick="sendData()" disabled>✅ დასრულება</button>
@@ -907,7 +938,7 @@
             document.getElementById('nativeCamera').style.display = 'none';
             document.getElementById('reader').style.display = 'block';
 
-            html5Qrcode.start(
+            return html5Qrcode.start(
                 { facingMode: "environment" },
                 html5Config,
                 onHtml5ScanSuccess,
@@ -1097,9 +1128,9 @@
         function toggleScanner() {
             if (!cameraStarted) {
                 if (useNative) {
-                    startNativeCamera();
+                    return startNativeCamera();
                 } else {
-                    startHtml5Camera();
+                    return startHtml5Camera();
                 }
             } else if (scanningActive) {
                 pauseScanning();
@@ -1430,6 +1461,98 @@
             autoTorchTriggered = false;
             document.getElementById('torchBtn').style.display = 'none';
             document.getElementById('torchBtn').classList.remove('active');
+        }
+
+        // ===== მიღების რეჟიმი: ზარის / აპის გადართვის შემდეგ კამერა იყინება =====
+        // სამი ტრიგერი (visibilitychange, ტრეკის ended/mute, გაყინული ვიდეო) → ერთი დამუშავება:
+        // კამერა ჩერდება და სრულეკრანიანი „📷 კამერის ჩართვა". თავისით არასდროს ირთვება.
+        // პაუზა („📸 სკანირება") ვიდეოს არ აჩერებს (ორივე ძრავზე კამერა რჩება ჩართული),
+        // ამიტომ currentTime პაუზაზეც მიდის და watchdog არ ირთვება.
+        if (RCV_MODE) {
+            const RCV_FREEZE_MS = 3000;
+            const overlayEl = document.getElementById('rcvResume');
+            const countEl = document.getElementById('rcvResumeCount');
+            const msgEl = document.getElementById('rcvResumeMsg');
+            let rcvOverlayOn = false;
+            let hiddenWithCamera = false;
+            let wdVideo = null, wdTime = -1, wdSince = 0;
+            let watchedTrack = null;
+
+            function rcvShowResume(msg) {
+                let qty = 0;
+                try { outbox.items().forEach(i => { qty += i.qty; }); } catch (e) {}
+                countEl.textContent = '✅ დასკანერებული: ' + qty + ' ცალი (შენახულია)';
+                msgEl.textContent = msg || '';
+                overlayEl.style.display = 'flex';
+                rcvOverlayOn = true;
+            }
+
+            function rcvInterrupt() {
+                if (rcvSending || rcvOverlayOn || !cameraStarted) return;
+                stopAllCameras();
+                wdVideo = null;
+                watchedTrack = null;
+                rcvShowResume('');
+            }
+
+            function rcvVideoEl() {
+                return useNative ? document.getElementById('nativeVideo') : document.querySelector('#reader video');
+            }
+
+            function rcvWatchTrack() {
+                const stream = useNative ? nativeStream : getHtml5Stream();
+                const track = stream && stream.getVideoTracks()[0];
+                if (!track || track === watchedTrack) return;
+                watchedTrack = track;
+                const onEnd = () => { if (track === watchedTrack) rcvInterrupt(); };
+                track.addEventListener('ended', onEnd);
+                track.addEventListener('mute', onEnd);
+            }
+
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') {
+                    hiddenWithCamera = cameraStarted;
+                } else {
+                    wdVideo = null;
+                    if (hiddenWithCamera) rcvInterrupt();
+                    hiddenWithCamera = false;
+                }
+            });
+
+            setInterval(() => {
+                if (!cameraStarted || rcvSending || rcvOverlayOn || document.visibilityState !== 'visible') {
+                    wdVideo = null;
+                    return;
+                }
+                const video = rcvVideoEl();
+                if (!video) { wdVideo = null; return; }
+                rcvWatchTrack();
+                const now = Date.now();
+                if (video !== wdVideo || video.currentTime !== wdTime) {
+                    wdVideo = video;
+                    wdTime = video.currentTime;
+                    wdSince = now;
+                } else if (now - wdSince >= RCV_FREEZE_MS) {
+                    rcvInterrupt();
+                }
+            }, 1000);
+
+            document.getElementById('rcvResumeBtn').addEventListener('click', async () => {
+                msgEl.textContent = '';
+                // html5-qrcode-ის stop() ასინქრონულია; ჩავრთოთ ახალი მხოლოდ მისი დასრულების შემდეგ
+                for (let i = 0; i < 10 && cameraStarted; i++) {
+                    await new Promise(r => setTimeout(r, 100));
+                }
+                cameraStarted = false;
+                scanningActive = false;
+                overlayEl.style.display = 'none';
+                rcvOverlayOn = false;
+                wdVideo = null;
+                try { await toggleScanner(); } catch (e) {}
+                if (!cameraStarted) {
+                    rcvShowResume('დახურე და თავიდან გახსენი სკანერი — დასკანერებული შენახულია');
+                }
+            });
         }
 
         function escapeHtml(text) {
