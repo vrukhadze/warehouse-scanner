@@ -333,3 +333,71 @@ test("legacy send covers only scans not yet sent as packets", () => {
   after.ack(p.cid);
   assert.deepEqual(after.nextPacket("init").events, [u]);   // გაუქმებაც
 });
+
+// ---- fix round 1: დასრულებული მიღების გასუფთავება (R15) ----
+
+const DAY = 24 * 3600 * 1000;
+const T0 = 1761300000000;
+function mkAt(storage, rid, uid, k, ts) { return mk(storage, rid, uid, k, () => ts); }
+
+test("closed receipt with nothing unsent is pruned", () => {
+  const s = memStorage();
+  const o = mk(s, "r1", "7", K);
+  o.addScan("A");
+  const p = sendOne(o);
+  o.reconcile([p.cid]);
+  o.addScan("B");
+  sendOne(o);                // sent, ჯერ დაუთვლელი (ობოლიც შეიძლება იყოს) — ბოტს აქვს
+  assert.equal(o.prune(), true);
+  assert.equal(s.getItem("rcv_outbox_v2:r1:7"), null);
+  assert.deepEqual(o.items(), []);
+  assert.deepEqual(mk(s, "r1", "7").items(), []);
+});
+
+test("closed receipt with pending is kept", () => {
+  const s = memStorage();
+  const o = mk(s, "r1", "7", K);
+  o.addScan("A");
+  assert.equal(o.prune(), false);            // pending
+  o.nextPacket("init");
+  assert.equal(o.prune(), false);            // inflight
+  assert.deepEqual(mk(s, "r1", "7").items(), [{ code: "A", qty: 1 }]);
+  const u = mk(s, "r2", "7", K);
+  u.addScan("B");
+  sendOne(u);
+  u.undoLast();                              // მხოლოდ გაუქმების მოვლენა pending-ში — ისიც გაუგზავნელია
+  assert.equal(u.prune(), false);
+  assert.ok(s.getItem("rcv_outbox_v2:r2:7"));
+});
+
+test("old synced outbox of another rid is pruned on open", () => {
+  const s = memStorage();
+  const old = mkAt(s, "r0", "7", K, T0);
+  old.addScan("A");
+  sendOne(old);
+  const cur = mkAt(s, "r1", "7", K, T0);     // მიმდინარე მიღება — არასდროს
+  cur.addScan("B");
+  sendOne(cur);
+  const other = mkAt(s, "r0", "8", K, T0);   // სხვა მომხმარებელი
+  other.addScan("C");
+  sendOne(other);
+  assert.deepEqual(RcvOutbox.pruneStale(s, "7", "r1", T0 + 15 * DAY), ["r0"]);
+  assert.equal(s.getItem("rcv_outbox_v2:r0:7"), null);
+  assert.ok(s.getItem("rcv_outbox_v2:r1:7"));
+  assert.ok(s.getItem("rcv_outbox_v2:r0:8"));
+});
+
+test("recent or unsent outbox of another rid is kept", () => {
+  const s = memStorage();
+  const recent = mkAt(s, "r2", "7", K, T0 + 10 * DAY);
+  recent.addScan("A");
+  sendOne(recent);                                    // სინქრონიზებული, მაგრამ ახალი
+  mkAt(s, "r3", "7", undefined, T0).addScan("B");     // ძველი, pending (k-ს გარეშე)
+  const inflight = mkAt(s, "r4", "7", K, T0);
+  inflight.addScan("C");
+  inflight.nextPacket("init");                        // ძველი, inflight
+  s.setItem("rcv_outbox_v2:r5:7", "{");               // წაუკითხავი — არ ვშლით
+  assert.deepEqual(RcvOutbox.pruneStale(s, "7", "r1", T0 + 15 * DAY), []);
+  ["r2", "r3", "r4", "r5"].forEach((rid) => assert.ok(s.getItem(`rcv_outbox_v2:${rid}:7`), rid));
+  assert.equal(mk(s, "r4", "7").k(), K);
+});

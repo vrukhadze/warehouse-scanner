@@ -7,6 +7,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   var PREFIX = "rcv_outbox_v2:";
   var MAX_EVENTS = 200;   // Worker-ის ზღვარი 64 KB: ~70 სიმბოლო მოვლენაზე + init_data
+  var STALE_MS = 14 * 24 * 3600 * 1000;   // სხვა მიღების სინქრონიზებული რიგი ამაზე ძველი → იშლება
   function keyOf(rid, uid) { return PREFIX + rid + ":" + uid; }
 
   function emptyState(rid, uid) {
@@ -55,6 +56,25 @@
       var rid = key.slice(PREFIX.length, key.length - suffix.length);
       if (rid && rid.indexOf(":") === -1 && rid !== String(exceptRid)) out.push(rid);
     }
+    return out;
+  }
+
+  // გაუგზავნელი არაფერია (pending — გაუქმების მოვლენაც — და inflight ცარიელია) → წაშლა მონაცემს არ კარგავს
+  function synced(s) { return !s.pending.length && !s.inflight.length; }
+
+  // სხვა მიღებების სინქრონიზებული რიგები, რომელთა ბოლო მოვლენა 14 დღეზე ძველია → storage-იდან იშლება.
+  // გაუგზავნელიანი და წაუკითხავი (დაზიანებული) რიგი არასდროს იშლება. → წაშლილი rid-ები
+  function pruneStale(storage, uid, exceptRid, nowMs) {
+    var out = [];
+    staleRids(storage, uid, exceptRid).forEach(function (rid) {
+      var key = keyOf(rid, uid);
+      try { JSON.parse(storage.getItem(key)); } catch (e) { return; }
+      var s = load(storage, key, rid, uid);
+      var newest = 0;
+      s.counted.concat(flat(s.sent)).forEach(function (e) { if (e.ts > newest) newest = e.ts; });
+      if (!synced(s) || nowMs - newest <= STALE_MS) return;
+      try { storage.removeItem(key); out.push(rid); } catch (e) { /* შემდეგ გახსნაზე */ }
+    });
     return out;
   }
 
@@ -244,8 +264,16 @@
       hbSent: function (n) {
         commit(function (st) { st.lastHb = n; });
       },
+      k: function () { return state.k || null; },
+      // დახურული მიღება: გაუგზავნელი არაფერია → რიგი storage-იდან იშლება (sent/counted ბოტს აქვს). → true | false
+      prune: function () {
+        if (!synced(state)) return false;
+        storage.removeItem(key);
+        state = emptyState(rid, uid);
+        return true;
+      },
     };
   }
 
-  return { open: open, staleRids: staleRids };
+  return { open: open, staleRids: staleRids, pruneStale: pruneStale };
 });
