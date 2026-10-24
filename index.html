@@ -355,6 +355,8 @@
         const RCV_UID = tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
         const RCV_MODE = opType === 'PURCHASE' && !!RID && !!RCV_UID;
         let outbox = null;
+        let rcvSending = false;  // გაგზავნისას სკანი/გაუქმება იკრძალება
+        let rcvRows = [];        // ბოლოს დარენდერებული სტრიქონები („+" ინდექსით, inline JS-ის გარეშე)
         if (RCV_MODE) {
             outbox = RcvOutbox.open({
                 storage: window.localStorage,
@@ -1050,6 +1052,7 @@
 
         function handleRawScan(rawCode) {
             if (!scanningActive) return;
+            if (RCV_MODE && rcvSending) return;
             if (!rawCode || rawCode.trim().length === 0) return;
 
             const cleaned = cleanCode(rawCode);
@@ -1158,7 +1161,25 @@
         }
 
         // მიღების რეჟიმში: true = შენახულია
+        function rcvSetControls(enabled) {
+            const manual = document.getElementById('manualCode');
+            manual.disabled = !enabled;
+            if (manual.nextElementSibling) manual.nextElementSibling.disabled = !enabled;
+            document.getElementById('scanBtn').disabled = !enabled;
+        }
+
+        function rcvSendEnd() {
+            rcvSending = false;
+            rcvSetControls(true);
+        }
+
+        function rcvAddRow(idx) {
+            const row = rcvRows[idx];
+            if (row) rcvAdd(row.code);
+        }
+
         function rcvAdd(code) {
+            if (rcvSending) return false;
             try {
                 outbox.addScan(code);
             } catch (e) {
@@ -1171,6 +1192,7 @@
         }
 
         function rcvUndoLast() {
+            if (rcvSending) return;
             try { outbox.undoLast(); } catch (e) { rcvSaveFailed(); return; }
             renderList();
         }
@@ -1228,6 +1250,7 @@
             const sendBtn = document.getElementById('sendBtn');
             const totalBar = document.getElementById('totalBar');
             const listItems = RCV_MODE ? outbox.items() : scannedItems;
+            if (RCV_MODE) rcvRows = listItems;
 
             if (listItems.length === 0) {
                 listEl.innerHTML = '<div class="empty-msg">📸 დააჭირე სკანირებას ან ხელით შეიყვანე კოდი</div>';
@@ -1248,7 +1271,7 @@
                         <div class="code">${escapeHtml(item.code)}</div>
                         <div class="qty-controls">
                             <span class="qty-num">${item.qty}</span>
-                            <button class="qty-btn" onclick="rcvAdd(${JSON.stringify(item.code).replace(/"/g, '&quot;')})">+</button>
+                            <button class="qty-btn" onclick="rcvAddRow(${idx})">+</button>
                         </div>
                     </div>
                 `;
@@ -1305,6 +1328,10 @@
 
             const statusMsg = document.getElementById('statusMsg');
             const sendBtn = document.getElementById('sendBtn');
+            if (RCV_MODE) {
+                rcvSending = true;
+                rcvSetControls(false);
+            }
             sendBtn.disabled = true;
             statusMsg.textContent = '⏳ იგზავნება...';
             statusMsg.className = 'status-msg';
@@ -1369,6 +1396,7 @@
                     statusMsg.textContent = '❌ შეცდომა: ' + (result.error || 'unknown');
                     statusMsg.className = 'status-msg status-err';
                     sendBtn.disabled = false;
+                    if (RCV_MODE) rcvSendEnd();
                 }
             })
             .catch(err => {
@@ -1377,6 +1405,7 @@
                 statusMsg.textContent = '❌ კავშირი: ' + errMsg;
                 statusMsg.className = 'status-msg status-err';
                 sendBtn.disabled = false;
+                if (RCV_MODE) rcvSendEnd();
             });
         }
 
