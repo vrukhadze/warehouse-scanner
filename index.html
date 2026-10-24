@@ -299,6 +299,7 @@
         <button class="btn btn-send" id="sendBtn" onclick="sendData()" disabled>✅ დასრულება</button>
     </div>
 
+    <script src="rcv-outbox.js?v=2"></script>
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
@@ -347,6 +348,26 @@
             headerEl.textContent = '📷 სკანერი — 📥 ჩამოსაწერი';
         } else if (opType === 'PURCHASE') {
             headerEl.textContent = '📷 სკანერი — 📦 შეძენა';
+        }
+
+        // ===== მიღების რეჟიმი: სკანი ჯერ ტელეფონში ინახება (outbox), მერე სიგნალი =====
+        const RID = new URLSearchParams(window.location.search).get('rid');
+        const RCV_UID = tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
+        const RCV_MODE = opType === 'PURCHASE' && !!RID && !!RCV_UID;
+        let outbox = null;
+        if (RCV_MODE) {
+            outbox = RcvOutbox.open({
+                storage: window.localStorage,
+                rid: RID,
+                uid: RCV_UID,
+                now: Date.now,
+                rand: function (n) {
+                    const b = new Uint8Array(Math.ceil(n / 2));
+                    crypto.getRandomValues(b);
+                    return Array.from(b, x => x.toString(16).padStart(2, '0')).join('').slice(0, n);
+                }
+            });
+            document.getElementById('clearBtn').style.display = 'none';
         }
 
         let scannedItems = [];
@@ -998,27 +1019,7 @@
         }
 
         // ===== საერთო სკანირების ლოგიკა (ორივე engine-სთვის) =====
-        function handleRawScan(rawCode) {
-            if (!scanningActive) return;
-            if (!rawCode || rawCode.trim().length === 0) return;
-
-            const cleaned = cleanCode(rawCode);
-            if (!cleaned) return;
-
-            // Multi-scan consensus — აკუმულირება
-            const confirmed = addToBuffer(cleaned);
-            if (!confirmed) return;  // ჯერ არ არის კონსენსუსი
-
-            // ✅ კონსენსუსით დადასტურებული კოდი!
-            const now = Date.now();
-            // დუბლიკატის ფილტრი (იგივე კოდი 3 წამში)
-            if (confirmed === lastScannedCode && (now - lastScannedTime) < 1500) {
-                return;
-            }
-            lastScannedCode = confirmed;
-            lastScannedTime = now;
-
-            // ვიბრაცია
+        function signalScan() {
             // ვიბრაცია — Android
             if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
             // Haptic — iOS/Android Telegram WebApp
@@ -1045,8 +1046,40 @@
                 osc.start();
                 osc.stop(actx.currentTime + 0.12);
             } catch(e) {}
+        }
 
-            addCode(confirmed);
+        function handleRawScan(rawCode) {
+            if (!scanningActive) return;
+            if (!rawCode || rawCode.trim().length === 0) return;
+
+            const cleaned = cleanCode(rawCode);
+            if (!cleaned) return;
+
+            // Multi-scan consensus — აკუმულირება
+            const confirmed = addToBuffer(cleaned);
+            if (!confirmed) return;  // ჯერ არ არის კონსენსუსი
+
+            // ✅ კონსენსუსით დადასტურებული კოდი!
+            const now = Date.now();
+            // დუბლიკატის ფილტრი (იგივე კოდი 3 წამში)
+            if (confirmed === lastScannedCode && (now - lastScannedTime) < 1500) {
+                return;
+            }
+            lastScannedCode = confirmed;
+            lastScannedTime = now;
+
+            if (RCV_MODE) {
+                // ჯერ ჩაწერა, მერე სიგნალი (სიგნალი = შენახულია)
+                if (!addCode(confirmed)) {
+                    lastScannedCode = '';
+                    pauseScanning();
+                    return;
+                }
+                signalScan();
+            } else {
+                signalScan();
+                addCode(confirmed);
+            }
 
             document.getElementById('lastScan').textContent = '✅ ' + confirmed;
             setTimeout(() => {
@@ -1118,9 +1151,34 @@
             return code;
         }
 
+        function rcvSaveFailed() {
+            const statusMsg = document.getElementById('statusMsg');
+            statusMsg.textContent = '⚠️ ტელეფონში ვერ შეინახა — სცადე ხელახლა';
+            statusMsg.className = 'status-msg status-err';
+        }
+
+        // მიღების რეჟიმში: true = შენახულია
+        function rcvAdd(code) {
+            try {
+                outbox.addScan(code);
+            } catch (e) {
+                rcvSaveFailed();
+                return false;
+            }
+            document.getElementById('statusMsg').textContent = '';
+            renderList();
+            return true;
+        }
+
+        function rcvUndoLast() {
+            try { outbox.undoLast(); } catch (e) { rcvSaveFailed(); return; }
+            renderList();
+        }
+
         function addCode(rawCode) {
             const code = cleanCode(rawCode);
-            if (!code) return;
+            if (!code) return false;
+            if (RCV_MODE) return rcvAdd(code);
 
             const existingIdx = scannedItems.findIndex(item => item.code === code);
             if (existingIdx !== -1) {
@@ -1132,6 +1190,7 @@
                 scannedItems.unshift({ code: code, qty: 1 });
             }
             renderList();
+            return true;
         }
 
         function addManualCode() {
@@ -1142,6 +1201,8 @@
                 input.value = '';
             }
         }
+
+        if (RCV_MODE) renderList();  // მიღებაში: შენახული სკანები გახსნისას მაშინვე ჩანს
 
         document.getElementById('manualCode').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
@@ -1166,8 +1227,9 @@
             const listEl = document.getElementById('scanList');
             const sendBtn = document.getElementById('sendBtn');
             const totalBar = document.getElementById('totalBar');
+            const listItems = RCV_MODE ? outbox.items() : scannedItems;
 
-            if (scannedItems.length === 0) {
+            if (listItems.length === 0) {
                 listEl.innerHTML = '<div class="empty-msg">📸 დააჭირე სკანირებას ან ხელით შეიყვანე კოდი</div>';
                 sendBtn.disabled = true;
                 totalBar.textContent = '';
@@ -1178,8 +1240,20 @@
             let html = '';
             let totalQty = 0;
 
-            scannedItems.forEach((item, idx) => {
+            listItems.forEach((item, idx) => {
                 totalQty += item.qty;
+                if (RCV_MODE) {
+                    html += `
+                    <div class="scan-item">
+                        <div class="code">${escapeHtml(item.code)}</div>
+                        <div class="qty-controls">
+                            <span class="qty-num">${item.qty}</span>
+                            <button class="qty-btn" onclick="rcvAdd(${JSON.stringify(item.code).replace(/"/g, '&quot;')})">+</button>
+                        </div>
+                    </div>
+                `;
+                    return;
+                }
                 html += `
                     <div class="scan-item">
                         <div class="code">${escapeHtml(item.code)}</div>
@@ -1193,8 +1267,12 @@
                 `;
             });
 
+            if (RCV_MODE) {
+                html += '<button class="btn" style="width:100%;margin-top:10px" onclick="rcvUndoLast()">↩️ ბოლო სკანის გაუქმება</button>';
+            }
+
             listEl.innerHTML = html;
-            totalBar.textContent = `სულ: ${scannedItems.length} კოდი, ${totalQty} ცალი`;
+            totalBar.textContent = `სულ: ${listItems.length} კოდი, ${totalQty} ცალი`;
         }
 
         function clearAll() {
@@ -1223,7 +1301,7 @@
         }
 
         function sendData() {
-            if (scannedItems.length === 0) return;
+            if (RCV_MODE ? outbox.legacyItems().length === 0 : scannedItems.length === 0) return;
 
             const statusMsg = document.getElementById('statusMsg');
             const sendBtn = document.getElementById('sendBtn');
@@ -1239,7 +1317,7 @@
             const payload = {
                 op: opType || '',
                 bid: buyerId || '0',
-                items: scannedItems.map(item => ({code: item.code, qty: item.qty}))
+                items: (RCV_MODE ? outbox.legacyItems() : scannedItems).map(item => ({code: item.code, qty: item.qty}))
             };
 
             // Worker relay → deep link → ბოტში გადასვლა
@@ -1259,6 +1337,7 @@
             })
             .then(result => {
                 if (result.key) {
+                    if (RCV_MODE) outbox.clearAll();  // მხოლოდ Worker-ის key-ის შემდეგ
                     const deepLink = 'https://t.me/' + BOT_NAME + '?start=SK_' + result.key;
                     statusMsg.textContent = '✅ მონაცემები შენახულია!';
 
