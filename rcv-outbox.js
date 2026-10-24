@@ -61,6 +61,20 @@
         .map(function (c) { return { code: c, qty: qty[c] }; });
     }
 
+    // pending სკანი იშლება; გაგზავნილზე/გზაშიყოფილზე undo-მოვლენა ემატება
+    function removeScan(target) {
+      var inPending = state.pending.some(function (e) { return e.id === target.id; });
+      if (inPending) {
+        commit(function (st) {
+          st.pending = st.pending.filter(function (e) { return e.id !== target.id; });
+        });
+        return target;
+      }
+      var undo = { id: rand(16), t: "undo", target: target.id, ts: now() };
+      commit(function (st) { st.pending.push(undo); });
+      return undo;
+    }
+
     return {
       addScan: function (code) {
         var ev = { id: rand(16), t: "scan", code: String(code), ts: now() };
@@ -69,18 +83,12 @@
       },
       undoLast: function () {
         var live = liveScans(state);
-        if (!live.length) return null;
-        var target = live[live.length - 1];
-        var inPending = state.pending.some(function (e) { return e.id === target.id; });
-        if (inPending) {
-          commit(function (st) {
-            st.pending = st.pending.filter(function (e) { return e.id !== target.id; });
-          });
-          return target;
-        }
-        var undo = { id: rand(16), t: "undo", target: target.id, ts: now() };
-        commit(function (st) { st.pending.push(undo); });
-        return undo;
+        return live.length ? removeScan(live[live.length - 1]) : null;
+      },
+      removeOne: function (code) {
+        code = String(code);
+        var live = liveScans(state).filter(function (e) { return e.code === code; });
+        return live.length ? removeScan(live[live.length - 1]) : null;
       },
       items: aggregate,
       pendingCount: function () {

@@ -75,3 +75,51 @@ test("failed write throws and adds nothing", () => {
   assert.deepEqual(o.items(), [{ code: "A", qty: 1 }]);
   assert.equal(o.pendingCount(), 1);
 });
+
+test("removeOne drops the last pending scan of that code only", () => {
+  const o = mk(memStorage());
+  o.addScan("A"); o.addScan("B"); o.addScan("A");
+  o.removeOne("A");
+  assert.deepEqual(o.items(), [{ code: "B", qty: 1 }, { code: "A", qty: 1 }]);
+  assert.equal(o.pendingCount(), 2);
+});
+
+test("removeOne of a sent scan becomes an undo event", () => {
+  const s = memStorage();
+  const key = "rcv_outbox_v2:r1:7";
+  s.setItem(key, JSON.stringify({
+    v: 2, rid: "r1", uid: "7", pending: [], inflight: [],
+    sent: [{ id: "s1", t: "scan", code: "A", ts: 1 }, { id: "s2", t: "scan", code: "B", ts: 2 }],
+  }));
+  const o = mk(s);
+  const ev = o.removeOne("A");
+  assert.equal(ev.t, "undo");
+  assert.equal(ev.target, "s1");
+  assert.deepEqual(o.items(), [{ code: "B", qty: 1 }]);
+  assert.deepEqual(JSON.parse(s.getItem(key)).pending, [ev]);
+});
+
+test("removeOne of an unknown code returns null", () => {
+  const o = mk(memStorage());
+  o.addScan("A");
+  assert.equal(o.removeOne("Z"), null);
+  assert.deepEqual(o.items(), [{ code: "A", qty: 1 }]);
+});
+
+test("removeOne persists across reopen", () => {
+  const s = memStorage();
+  const o = mk(s);
+  o.addScan("A"); o.addScan("A");
+  o.removeOne("A");
+  assert.deepEqual(mk(s).items(), [{ code: "A", qty: 1 }]);
+});
+
+test("failed write in removeOne throws and changes nothing", () => {
+  const s = memStorage();
+  const o = mk(s);
+  o.addScan("A"); o.addScan("A");
+  s.setItem = () => { throw new Error("full"); };
+  assert.throws(() => o.removeOne("A"), /full/);
+  assert.deepEqual(o.items(), [{ code: "A", qty: 2 }]);
+  assert.equal(o.pendingCount(), 2);
+});

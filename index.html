@@ -1209,6 +1209,14 @@
             if (row) rcvAdd(row.code);
         }
 
+        function rcvRemoveRow(idx) {
+            const row = rcvRows[idx];
+            if (!row || rcvSending) return;
+            try { outbox.removeOne(row.code); } catch (e) { rcvSaveFailed(); return; }
+            document.getElementById('statusMsg').textContent = '';
+            renderList();
+        }
+
         function rcvAdd(code) {
             if (rcvSending) return false;
             try {
@@ -1301,6 +1309,7 @@
                     <div class="scan-item">
                         <div class="code">${escapeHtml(item.code)}</div>
                         <div class="qty-controls">
+                            <button class="qty-btn" onclick="rcvRemoveRow(${idx})">−</button>
                             <span class="qty-num">${item.qty}</span>
                             <button class="qty-btn" onclick="rcvAddRow(${idx})">+</button>
                         </div>
