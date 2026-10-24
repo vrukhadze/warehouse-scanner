@@ -8,16 +8,26 @@ function memStorage() {
     getItem: (k) => (m.has(k) ? m.get(k) : null),
     setItem: (k, v) => { m.set(k, String(v)); },
     removeItem: (k) => { m.delete(k); },
+    key: (i) => [...m.keys()][i] ?? null,
+    get length() { return m.size; },
     _m: m,
   };
 }
-function mk(storage, rid = "r1", uid = "7") {
+function mk(storage, rid = "r1", uid = "7", k = undefined, now = undefined) {
   let t = 1000, n = 0;
   return RcvOutbox.open({
-    storage, rid, uid,
-    now: () => (t += 1),
+    storage, rid, uid, k,
+    now: now || (() => (t += 1)),
     rand: (len) => String(++n).padStart(len, "0"),
   });
+}
+const K = "e60ab38c20969be628225f6eb3e10df5";
+// ერთი პაკეტის გაგზავნა: nextPacket → (Worker ok) → ack
+function sendOne(o, init = "init") {
+  const p = o.nextPacket(init);
+  assert.ok(p);
+  assert.equal(o.ack(p.cid), true);
+  return p;
 }
 
 test("addScan persists before returning", () => {
@@ -89,7 +99,7 @@ test("removeOne of a sent scan becomes an undo event", () => {
   const key = "rcv_outbox_v2:r1:7";
   s.setItem(key, JSON.stringify({
     v: 2, rid: "r1", uid: "7", pending: [], inflight: [],
-    sent: [{ id: "s1", t: "scan", code: "A", ts: 1 }, { id: "s2", t: "scan", code: "B", ts: 2 }],
+    sent: [{ cid: "c1", events: [{ id: "s1", t: "scan", code: "A", ts: 1 }, { id: "s2", t: "scan", code: "B", ts: 2 }] }],
   }));
   const o = mk(s);
   const ev = o.removeOne("A");
@@ -122,4 +132,204 @@ test("failed write in removeOne throws and changes nothing", () => {
   assert.throws(() => o.removeOne("A"), /full/);
   assert.deepEqual(o.items(), [{ code: "A", qty: 2 }]);
   assert.equal(o.pendingCount(), 2);
+});
+
+// ---- Task 8: Worker-ზე გაგზავნა ----
+
+test("nextPacket keeps the same cid and events until ack", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  o.addScan("A"); o.addScan("B");
+  const p1 = o.nextPacket("init-1");
+  assert.equal(p1.v, 2);
+  assert.equal(p1.rid, "r1");
+  assert.equal(p1.uid, "7");
+  assert.equal(p1.k, K);
+  assert.equal(p1.init_data, "init-1");
+  assert.deepEqual(p1.events.map((e) => e.code), ["A", "B"]);
+  o.addScan("C");
+  const p2 = o.nextPacket("init-2");
+  assert.equal(p2.cid, p1.cid);
+  assert.deepEqual(p2.events, p1.events);
+  assert.equal(p2.init_data, "init-2");   // init_data ყოველ ცდაზე ახალი
+  assert.equal(o.pendingCount(), 3);      // inflight ჯერ არ მიუღია Worker-ს
+  assert.equal(o.ack("other"), false);    // სხვა cid-ის ack არაფერს ცვლის
+  assert.equal(o.ack(p1.cid), true);
+  assert.equal(o.pendingCount(), 1);
+  const p3 = o.nextPacket("init-3");
+  assert.notEqual(p3.cid, p1.cid);
+  assert.deepEqual(p3.events.map((e) => e.code), ["C"]);
+  o.ack(p3.cid);
+  assert.equal(o.nextPacket("init-4"), null);
+});
+
+test("retry after reload resends the same packet", () => {
+  const s = memStorage();
+  const o = mk(s, "r1", "7", K);
+  o.addScan("A");
+  const p1 = o.nextPacket("init-1");
+  const again = mk(s, "r1", "7");   // ხელახლა გახსნა, k-ს გარეშე
+  const p2 = again.nextPacket("init-2");
+  assert.equal(p2.cid, p1.cid);
+  assert.deepEqual(p2.events, p1.events);
+  assert.equal(p2.k, K);
+  assert.equal(p2.init_data, "init-2");
+});
+
+test("reconcile drops counted packets", () => {
+  const s = memStorage();
+  const o = mk(s, "r1", "7", K);
+  o.addScan("A");
+  const p1 = sendOne(o);
+  o.addScan("B");
+  const p2 = sendOne(o);
+  assert.equal(o.reconcile([p1.cid]), 1);
+  const st = JSON.parse(s.getItem("rcv_outbox_v2:r1:7"));
+  assert.deepEqual(st.sent.map((p) => p.cid), [p2.cid]);
+  assert.equal(o.reconcile([p1.cid]), 0);   // უკვე დათვლილი — ჩაწერის გარეშე
+  // დათვლილი სკანი სიაში რჩება (გაუქმებისთვის საჭიროა მისი id)
+  assert.deepEqual(o.rows(), [{ code: "B", qty: 1, state: "saved" }, { code: "A", qty: 1, state: "counted" }]);
+  assert.equal(o.savedCount({ saved: 1, done_cids: [p1.cid] }), 2);
+});
+
+test("reconcile settles an inflight packet the bot already counted", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  o.addScan("A");
+  const p = o.nextPacket("init");   // Worker-მა მიიღო, პასუხი დაიკარგა
+  assert.equal(o.reconcile([p.cid]), 1);
+  assert.equal(o.nextPacket("init"), null);
+  assert.equal(o.ack(p.cid), false);
+  assert.equal(o.pendingCount(), 0);
+});
+
+test("savedCount adds sent but uncounted scans", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  o.addScan("A"); o.addScan("B");
+  const p1 = sendOne(o);
+  o.addScan("C");
+  sendOne(o);
+  o.addScan("D");            // pending — Worker-ს ჯერ არ აქვს
+  o.nextPacket("init");      // inflight — ჯერ არ მიუღია
+  assert.equal(o.savedCount(null), 3);   // სტატუსამდე: მხოლოდ Worker-ის მიღებული
+  assert.equal(o.savedCount({ saved: 5, done_cids: [p1.cid] }), 6);
+  assert.equal(o.savedCount({ saved: 2.5, done_cids: [] }), 5.5);
+});
+
+test("undo of a sent scan becomes an undo event", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  const a = o.addScan("A");
+  const p1 = sendOne(o);
+  const u = o.undoLast();
+  assert.equal(u.t, "undo");
+  assert.equal(u.target, a.id);
+  assert.deepEqual(o.items(), []);
+  const p2 = o.nextPacket("init");
+  assert.deepEqual(p2.events, [u]);
+  o.ack(p2.cid);
+  assert.equal(o.savedCount(null), 0);
+  // დათვლილი სკანის გაუქმება: ბოტის saved-ს აკლდება, სანამ ბოტი გაუქმებას დაითვლის
+  const b = o.addScan("B");
+  const p3 = sendOne(o);
+  o.reconcile([p1.cid, p2.cid, p3.cid]);
+  const u2 = o.removeOne("B");
+  assert.equal(u2.target, b.id);
+  sendOne(o);
+  assert.equal(o.savedCount({ saved: 1, done_cids: [p1.cid, p2.cid, p3.cid] }), 0);
+  assert.deepEqual(o.items(), []);
+});
+
+test("cid sorts by time", () => {
+  // now()-ის გამოძახებები: addScan (ts), nextPacket (cid) — cid-ები 35 ("z"), 36 ("10"), 13-ნიშნა დრო
+  const times = [34, 35, 35, 36, 36, 1761300000000];
+  const o = mk(memStorage(), "r1", "7", K, () => times.shift());
+  const cids = [];
+  for (let i = 0; i < 3; i++) {
+    o.addScan("A" + i);        // addScan-ის ts იყენებს now()-ს
+    const p = o.nextPacket("init");
+    o.ack(p.cid);
+    cids.push(p.cid);
+  }
+  cids.forEach((c) => assert.match(c, /^[0-9a-z]{9}[0-9a-f]{8}$/));
+  assert.deepEqual([...cids].sort(), cids);
+});
+
+test("a packet holds at most 200 events", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  for (let i = 0; i < 250; i++) o.addScan("A");
+  const p1 = sendOne(o);
+  assert.equal(p1.events.length, 200);
+  const p2 = sendOne(o);
+  assert.equal(p2.events.length, 50);
+  assert.equal(o.pendingCount(), 0);
+});
+
+test("k is stored per rid", () => {
+  const s = memStorage();
+  mk(s, "r1", "7", K).addScan("A");
+  assert.equal(mk(s, "r1", "7").nextPacket("init").k, K);
+  const other = mk(s, "r2", "7");
+  other.addScan("B");
+  assert.equal(other.nextPacket("init"), null);
+});
+
+test("stale outbox without k is not flushed", () => {
+  const s = memStorage();
+  mk(s, "r0", "7").addScan("A");          // ფაზა A-ს რიგი — k არ ჰქონდა
+  mk(s, "r9", "7", K).addScan("B");       // სხვა მიღება, k-ით
+  mk(s, "r1", "7", K).addScan("C");       // მიმდინარე
+  mk(s, "r5", "17", K).addScan("D");      // სხვა მომხმარებელი
+  assert.deepEqual(RcvOutbox.staleRids(s, "7", "r1").sort(), ["r0", "r9"]);
+  assert.equal(mk(s, "r0", "7").nextPacket("init"), null);
+  assert.equal(mk(s, "r9", "7").nextPacket("init").k, K);
+});
+
+test("rows mark counted, saved and not yet sent scans", () => {
+  const o = mk(memStorage(), "r1", "7", K);
+  o.addScan("A");
+  const p1 = sendOne(o);
+  o.reconcile([p1.cid]);
+  o.addScan("B");
+  sendOne(o);
+  o.addScan("C");
+  o.addScan("A");
+  assert.deepEqual(o.rows(), [
+    { code: "A", qty: 2, state: "local" },
+    { code: "C", qty: 1, state: "local" },
+    { code: "B", qty: 1, state: "saved" },
+  ]);
+});
+
+test("heartbeat is due only when the pending count changes", () => {
+  const s = memStorage();
+  const o = mk(s, "r1", "7", K);
+  assert.equal(o.hbDue(), null);   // ცარიელი = Worker-ისთვის უცნობი = 0
+  o.addScan("A"); o.addScan("B");
+  assert.equal(o.hbDue(), 2);
+  o.hbSent(2);
+  assert.equal(o.hbDue(), null);
+  assert.equal(mk(s, "r1", "7").hbDue(), null);   // რესტარტს უძლებს
+  sendOne(o);
+  assert.equal(o.hbDue(), 0);
+  o.hbSent(0);
+  assert.equal(o.hbDue(), null);
+});
+
+test("legacy send covers only scans not yet sent as packets", () => {
+  const s = memStorage();
+  const o = mk(s, "r1", "7", K);
+  o.addScan("A");
+  sendOne(o);                 // Worker-ზე უკვე
+  o.addScan("B");
+  o.nextPacket("init");       // inflight
+  o.addScan("C");
+  const u = o.removeOne("A"); // გაუქმება pending-ში
+  // იგივე მიღება ფაზა A-ს ძველი ღილაკით (k-ს გარეშე): ძველი გაგზავნა მხოლოდ C-ს აგზავნის
+  const legacy = mk(s, "r1", "7");
+  assert.deepEqual(legacy.legacyItems(), [{ code: "C", qty: 1 }]);
+  legacy.clearAll();
+  const after = mk(s, "r1", "7");
+  assert.deepEqual(after.legacyItems(), []);
+  const p = after.nextPacket("init");          // inflight არ დაიკარგა
+  assert.deepEqual(p.events.map((e) => e.code), ["B"]);
+  after.ack(p.cid);
+  assert.deepEqual(after.nextPacket("init").events, [u]);   // გაუქმებაც
 });

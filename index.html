@@ -290,6 +290,20 @@
             font-size: 10px;
             color: var(--tg-theme-hint-color, #666);
         }
+        /* მიღება k-ით: მრიცხველები და ბოტის სტატუსი */
+        #rcvCounters { display: none; padding: 4px 16px 0; text-align: center; }
+        #rcvCounters .rcv-saved { font-size: 26px; font-weight: 800; color: #2ecc71; }
+        #rcvCounters .rcv-unsent {
+            margin-top: 6px; padding: 8px; border-radius: 10px;
+            background: #f1c40f; color: #000; font-size: 16px; font-weight: 700;
+        }
+        #rcvCounters .rcv-closed {
+            margin-top: 6px; padding: 8px; border-radius: 10px;
+            background: #e74c3c; color: #fff; font-size: 15px; font-weight: 700;
+        }
+        .rcv-h { font-size: 13px; color: var(--tg-theme-hint-color, #aaa); margin: 6px 0; }
+        .rcv-mark { margin-right: 8px; }
+        .rcv-total { display: flex; justify-content: space-between; gap: 10px; padding: 4px 14px; font-size: 14px; word-break: break-all; }
     </style>
 </head>
 <body>
@@ -314,6 +328,7 @@
         <input type="text" id="manualCode" placeholder="კოდი ხელით..." autocomplete="off" />
         <button onclick="addManualCode()">➕</button>
     </div>
+    <div id="rcvCounters"></div>
     <div class="scan-list" id="scanList">
         <div class="empty-msg">📸 დააჭირე სკანირებას ან ხელით შეიყვანე კოდი</div>
     </div>
@@ -330,7 +345,7 @@
         <button class="btn btn-send" id="sendBtn" onclick="sendData()" disabled>✅ დასრულება</button>
     </div>
 
-    <script src="rcv-outbox.js?v=2"></script>
+    <script src="rcv-outbox.js?v=3"></script>
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
@@ -383,24 +398,42 @@
 
         // ===== მიღების რეჟიმი: სკანი ჯერ ტელეფონში ინახება (outbox), მერე სიგნალი =====
         const RID = new URLSearchParams(window.location.search).get('rid');
+        const RCV_K = new URLSearchParams(window.location.search).get('k');
         const RCV_UID = tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
         const RCV_MODE = opType === 'PURCHASE' && !!RID && !!RCV_UID;
+        // k (წევრის გასაღები ბოტიდან) → სკანი მაშინვე Worker-ზე, „✅ დასრულების" გარეშე.
+        // k-ს გარეშე (ბოტს საიდუმლო არ აქვს / ძველი ღილაკი) — ფაზა A: ტელეფონში + ძველი გაგზავნა.
+        const RCV_LIVE = RCV_MODE && !!RCV_K;
         let outbox = null;
         let rcvSending = false;  // გაგზავნისას სკანი/გაუქმება იკრძალება
         let rcvRows = [];        // ბოლოს დარენდერებული სტრიქონები („+" ინდექსით, inline JS-ის გარეშე)
+        let rcvStatus = null;    // ბოტის ბოლო სტატუსი Worker-იდან (null — ჯერ არ მოსულა / 404)
+        let rcvClosed = false;   // ბოტმა მიღება დახურა — აღარც გაგზავნა, აღარც სკანირება
+        let rcvTimer = null;     // გაგზავნის ტაიმერი (debounce ან ხელახალი ცდა)
+        let rcvFirstChange = 0;  // პირველი გაუგზავნელი ცვლილების დრო (max-wait)
+        let rcvBackoff = 0;      // ბოლო ხელახალი ცდის პაუზა; 0 — ჩავარდნა არ ყოფილა
+        let rcvFlushing = false;
+        let rcvPolling = false;
+        let rcvPollTimer = null;
+        function rcvRand(n) {
+            const b = new Uint8Array(Math.ceil(n / 2));
+            crypto.getRandomValues(b);
+            return Array.from(b, x => x.toString(16).padStart(2, '0')).join('').slice(0, n);
+        }
         if (RCV_MODE) {
             outbox = RcvOutbox.open({
                 storage: window.localStorage,
                 rid: RID,
                 uid: RCV_UID,
+                k: RCV_K,
                 now: Date.now,
-                rand: function (n) {
-                    const b = new Uint8Array(Math.ceil(n / 2));
-                    crypto.getRandomValues(b);
-                    return Array.from(b, x => x.toString(16).padStart(2, '0')).join('').slice(0, n);
-                }
+                rand: rcvRand
             });
             document.getElementById('clearBtn').style.display = 'none';
+            if (RCV_LIVE) {
+                document.querySelector('.bottom-bar').style.display = 'none';
+                document.getElementById('rcvCounters').style.display = 'block';
+            }
         }
 
         let scannedItems = [];
@@ -1211,14 +1244,15 @@
 
         function rcvRemoveRow(idx) {
             const row = rcvRows[idx];
-            if (!row || rcvSending) return;
+            if (!row || rcvSending || rcvClosed) return;
             try { outbox.removeOne(row.code); } catch (e) { rcvSaveFailed(); return; }
             document.getElementById('statusMsg').textContent = '';
             renderList();
+            rcvSchedule();
         }
 
         function rcvAdd(code) {
-            if (rcvSending) return false;
+            if (rcvSending || rcvClosed) return false;
             try {
                 outbox.addScan(code);
             } catch (e) {
@@ -1227,13 +1261,15 @@
             }
             document.getElementById('statusMsg').textContent = '';
             renderList();
+            rcvSchedule();
             return true;
         }
 
         function rcvUndoLast() {
-            if (rcvSending) return;
+            if (rcvSending || rcvClosed) return;
             try { outbox.undoLast(); } catch (e) { rcvSaveFailed(); return; }
             renderList();
+            rcvSchedule();
         }
 
         function addCode(rawCode) {
@@ -1288,6 +1324,7 @@
             const listEl = document.getElementById('scanList');
             const sendBtn = document.getElementById('sendBtn');
             const totalBar = document.getElementById('totalBar');
+            if (RCV_LIVE) return rcvRenderLive(listEl, totalBar);
             const listItems = RCV_MODE ? outbox.items() : scannedItems;
             if (RCV_MODE) rcvRows = listItems;
 
@@ -1488,9 +1525,20 @@
             let watchedTrack = null;
 
             function rcvShowResume(msg) {
-                let qty = 0;
-                try { outbox.items().forEach(i => { qty += i.qty; }); } catch (e) {}
-                countEl.textContent = '✅ დასკანერებული: ' + qty + ' ცალი (შენახულია)';
+                if (RCV_LIVE) {
+                    // „შენახულია" = Worker-მა მიიღო; ტელეფონში დარჩენილი ცალკე ჩანს
+                    let text = '';
+                    try {
+                        text = '✅ შენახულია: ' + rcvNum(outbox.savedCount(rcvStatus));
+                        const m = outbox.pendingCount();
+                        if (m > 0) text += ' · ჯერ არ გაიგზავნა: ' + m;
+                    } catch (e) {}
+                    countEl.textContent = text;
+                } else {
+                    let qty = 0;
+                    try { outbox.items().forEach(i => { qty += i.qty; }); } catch (e) {}
+                    countEl.textContent = '✅ დასკანერებული: ' + qty + ' ცალი (შენახულია)';
+                }
                 msgEl.textContent = msg || '';
                 overlayEl.style.display = 'flex';
                 rcvOverlayOn = true;
@@ -1562,6 +1610,220 @@
                     rcvShowResume('დახურე და თავიდან გახსენი სკანერი — დასკანერებული შენახულია');
                 }
             });
+        }
+
+        // ===== მიღება k-ით: სკანი მაშინვე Worker-ზე, ბოტის სტატუსი უკან =====
+        // Cloudflare Free (R10): გაგზავნა ბოლო ცვლილებიდან ~2 წმ-ში (რამდენიმე სკანი — ერთ პაკეტად, მაქს. 8 წმ
+        // პირველიდან), ჩავარდნისას 2→4→8→…→60 წმ; hb მხოლოდ გაუგზავნელის რიცხვის ცვლილებაზე; სტატუსი 15 წმ-ში.
+        const RCV_DEBOUNCE_MS = 2000, RCV_MAX_WAIT_MS = 8000, RCV_BACKOFF_MAX_MS = 60000, RCV_POLL_MS = 15000;
+
+        function rcvNum(x) {
+            return String(Math.round(x * 1000) / 1000);
+        }
+
+        function rcvSchedule() {
+            if (!RCV_LIVE || rcvClosed || rcvBackoff) return;  // ხელახალი ცდისას ჯერ inflight პაკეტი უნდა წავიდეს
+            const now = Date.now();
+            if (!rcvFirstChange) rcvFirstChange = now;
+            const due = Math.min(now + RCV_DEBOUNCE_MS, rcvFirstChange + RCV_MAX_WAIT_MS);
+            clearTimeout(rcvTimer);
+            rcvTimer = setTimeout(rcvFlush, Math.max(0, due - now));
+        }
+
+        async function rcvFetch(url, opts) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            try {
+                return await fetch(url, Object.assign({ signal: controller.signal }, opts));
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
+        async function rcvPost(pkt, keepalive) {
+            try {
+                // text/plain — „მარტივი" მოთხოვნა: CORS preflight არ სჭირდება (keepalive-ითაც)
+                const r = await rcvFetch(WORKER_URL + '/rcv', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+                    body: JSON.stringify(pkt),
+                    keepalive: !!keepalive
+                });
+                if (!r.ok) return false;
+                const j = await r.json();
+                return !!(j && j.ok === true);
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // რიგი ბოლომდე: nextPacket (იგივე cid/მოვლენები, ახალი init_data) → POST → ack. → true | false (ჩავარდა)
+        async function rcvDrain(ob, keepalive) {
+            for (;;) {
+                if (ob === outbox && rcvClosed) return true;
+                let pkt;
+                try { pkt = ob.nextPacket(tg.initData || ''); } catch (e) { return false; }
+                if (!pkt) return true;
+                if (!(await rcvPost(pkt, keepalive))) return false;
+                try { ob.ack(pkt.cid); } catch (e) { return false; }  // ჩაწერა ჩავარდა → იგივე cid ხელახლა
+            }
+        }
+
+        async function rcvFlush(keepalive) {
+            clearTimeout(rcvTimer);
+            rcvTimer = null;
+            if (!RCV_LIVE || rcvClosed || rcvFlushing) return;
+            rcvFlushing = true;
+            rcvFirstChange = 0;
+            let ok = false;
+            try {
+                ok = await rcvDrain(outbox, keepalive === true);
+            } finally {
+                rcvFlushing = false;
+            }
+            if (ok) {
+                rcvBackoff = 0;
+            } else if (!rcvClosed) {
+                rcvBackoff = Math.min(RCV_BACKOFF_MAX_MS, rcvBackoff ? rcvBackoff * 2 : RCV_DEBOUNCE_MS);
+                rcvTimer = setTimeout(rcvFlush, rcvBackoff);
+            }
+            await rcvHeartbeat();
+            renderList();
+        }
+
+        // გაუგზავნელის რიცხვი Worker-ზე (ბოტის „დასრულების" გაფრთხილებისთვის) — მხოლოდ ცვლილებისას
+        async function rcvHeartbeat() {
+            if (rcvClosed) return;
+            let n = null;
+            try { n = outbox.hbDue(); } catch (e) { return; }
+            if (n === null) return;
+            try {
+                const r = await rcvFetch(WORKER_URL + '/rcv/hb/' + encodeURIComponent(RID) + '/' + encodeURIComponent(RCV_UID), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ k: RCV_K, pending: n, ts: Date.now() })
+                });
+                if (r.ok) outbox.hbSent(n);
+            } catch (e) { /* შემდეგ ჯერზე */ }
+        }
+
+        async function rcvPollStatus() {
+            if (!RCV_LIVE || rcvClosed || rcvPolling || document.visibilityState !== 'visible') return;
+            rcvPolling = true;
+            try {
+                const r = await rcvFetch(WORKER_URL + '/rcv/status/' + encodeURIComponent(RID) + '/' +
+                    encodeURIComponent(RCV_UID) + '?k=' + encodeURIComponent(RCV_K), { cache: 'no-store' });
+                if (r.ok) rcvApplyStatus(await r.json());  // 404 — ბოტს ჯერ არაფერი დაუთვლია
+            } catch (e) {
+                // შემდეგ ჯერზე
+            } finally {
+                rcvPolling = false;
+            }
+            await rcvHeartbeat();
+            renderList();
+        }
+
+        function rcvApplyStatus(st) {
+            if (!st || typeof st !== 'object') return;
+            try { outbox.reconcile(Array.isArray(st.done_cids) ? st.done_cids : []); } catch (e) { /* შემდეგ სტატუსზე */ }
+            rcvStatus = st;
+            if (st.open === false) rcvClose();
+        }
+
+        // მიღება დახურულია: გაგზავნა, სტატუსი და სკანირება ჩერდება; ტელეფონის მონაცემები რჩება
+        function rcvClose() {
+            if (rcvClosed) return;
+            rcvClosed = true;
+            clearTimeout(rcvTimer);
+            clearInterval(rcvPollTimer);
+            scanningActive = false;
+            stopAllCameras();
+            rcvSetControls(false);
+            document.getElementById('rcvResume').style.display = 'none';
+            renderList();
+        }
+
+        // სხვა მიღებების დარჩენილი (ამ მომხმარებლის, შენახული k-ით) — ბოტი წყვეტს (ღიაა / ობოლია)
+        async function rcvFlushStale() {
+            let rids = [];
+            try { rids = RcvOutbox.staleRids(window.localStorage, RCV_UID, RID); } catch (e) { return; }
+            for (const rid of rids) {
+                let ob;
+                try {
+                    ob = RcvOutbox.open({ storage: window.localStorage, rid: rid, uid: RCV_UID, now: Date.now, rand: rcvRand });
+                } catch (e) { continue; }
+                if (!(await rcvDrain(ob, false))) return;  // კავშირი არ არის — შემდეგ გახსნაზე
+            }
+        }
+
+        function rcvRenderLive(listEl, totalBar) {
+            const rows = outbox.rows();
+            rcvRows = rows;
+            const pending = outbox.pendingCount();
+            let top = '<div class="rcv-saved">შენახულია: ' + rcvNum(outbox.savedCount(rcvStatus)) + '</div>';
+            if (pending > 0) top += '<div class="rcv-unsent">ჯერ არ გაიგზავნა: ' + pending + ' — ინტერნეტს ელოდება</div>';
+            if (rcvClosed) top += '<div class="rcv-closed">მიღება დახურულია — სკანირება აქ აღარ ითვლება</div>';
+            document.getElementById('rcvCounters').innerHTML = top;
+            totalBar.textContent = '';
+
+            // „ჩემი ჯამი" — მხოლოდ ბოტის დათვლილი, ამ თანამშრომლის საკუთარი (ზედნადების რიცხვები აქ არ არის)
+            const codes = rcvStatus && rcvStatus.codes && typeof rcvStatus.codes === 'object' ? rcvStatus.codes : {};
+            const totals = Object.keys(codes).filter(c => Number(codes[c]) > 0).sort();
+            if (!rows.length && !totals.length) {
+                listEl.innerHTML = '<div class="empty-msg">📸 დააჭირე სკანირებას ან ხელით შეიყვანე კოდი</div>';
+                return;
+            }
+            const MARK = { counted: '✓', saved: '☁️', local: '⏳' };
+            let html = '';
+            if (rows.length) {
+                html += '<div class="rcv-h">ჩემი ბოლო სკანები</div>';
+                rows.forEach((item, idx) => {
+                    const controls = rcvClosed
+                        ? `<span class="qty-num">${item.qty}</span>`
+                        : `<div class="qty-controls">
+                            <button class="qty-btn" onclick="rcvRemoveRow(${idx})">−</button>
+                            <span class="qty-num">${item.qty}</span>
+                            <button class="qty-btn" onclick="rcvAddRow(${idx})">+</button>
+                        </div>`;
+                    html += `
+                    <div class="scan-item">
+                        <span class="rcv-mark">${MARK[item.state] || ''}</span>
+                        <div class="code">${escapeHtml(item.code)}</div>
+                        ${controls}
+                    </div>
+                `;
+                });
+                if (!rcvClosed) {
+                    html += '<button class="btn" style="width:100%;margin-top:10px" onclick="rcvUndoLast()">↩️ ბოლო სკანის გაუქმება</button>';
+                }
+            }
+            if (totals.length) {
+                html += '<div class="rcv-h">ჩემი ჯამი</div>';
+                totals.forEach(c => {
+                    html += '<div class="rcv-total"><span>' + escapeHtml(c) + '</span><b>' + rcvNum(Number(codes[c])) + '</b></div>';
+                });
+            }
+            listEl.innerHTML = html;
+        }
+
+        if (RCV_LIVE) {
+            document.addEventListener('visibilitychange', () => {
+                if (rcvClosed) return;
+                if (document.visibilityState === 'hidden') {
+                    rcvFlush(true);  // ეკრანიდან გასვლა — ბოლო შანსი (keepalive)
+                } else {
+                    rcvPollStatus();
+                    rcvFlush();
+                }
+            });
+            window.addEventListener('online', () => { rcvFlush(); });
+            rcvPollTimer = setInterval(rcvPollStatus, RCV_POLL_MS);
+            // გახსნისას: ჯერ რიგი, მერე ბოტის სტატუსი („სად გავჩერდი"), მერე სხვა მიღებების დარჩენილი
+            (async () => {
+                await rcvFlush();
+                await rcvPollStatus();
+                await rcvFlushStale();
+            })();
         }
 
         function escapeHtml(text) {
