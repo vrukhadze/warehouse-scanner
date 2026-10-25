@@ -606,6 +606,8 @@
                 // სკანირების ციკლის დაწყება
                 nativeScanLoop();
             } catch (err) {
+                // მაგ. play() ჩავარდა getUserMedia-ს შემდეგ — კამერა გავათავისუფლოთ, თორემ შემდეგი ცდა ვეღარ გახსნის
+                stopNativeCamera();
                 scanBtn.disabled = false;
                 scanBtn.textContent = '📸 სკანირება';
                 scanBtn.className = 'scan-btn';
@@ -1524,6 +1526,7 @@
         // ამიტომ currentTime პაუზაზეც მიდის და watchdog არ ირთვება.
         if (RCV_MODE) {
             const RCV_FREEZE_MS = 3000;
+            const RCV_MUTE_GRACE_MS = 1000;   // წამიერი mute (მაგ. ფანრის ჩართვა/გამორთვა) კამერას არ აჩერებს
             const overlayEl = document.getElementById('rcvResume');
             const countEl = document.getElementById('rcvResumeCount');
             const msgEl = document.getElementById('rcvResumeMsg');
@@ -1571,7 +1574,9 @@
                 watchedTrack = track;
                 const onEnd = () => { if (track === watchedTrack) rcvInterrupt(); };
                 track.addEventListener('ended', onEnd);
-                track.addEventListener('mute', onEnd);
+                track.addEventListener('mute', () => {
+                    setTimeout(() => { if (track.muted) onEnd(); }, RCV_MUTE_GRACE_MS);
+                });
             }
 
             document.addEventListener('visibilitychange', () => {
